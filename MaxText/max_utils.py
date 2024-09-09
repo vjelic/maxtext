@@ -75,6 +75,8 @@ def calculate_num_params_from_pytree(params):
 def calculate_total_params_per_chip(params):
   """Calculate total paramsper chip."""
   def calculate_leaf_params_per_chip(arr):
+    if type(arr) is jax.ShapeDtypeStruct:
+      return np.prod(arr.shape)
     shard = arr.addressable_shards[0]
     return np.prod(shard.data.shape)
 
@@ -246,10 +248,14 @@ def initialize_jax_for_gpu():
   if os.environ.get("JAX_COORDINATOR_IP") is not None:
     coordinator_ip = str(os.getenv("JAX_COORDINATOR_IP"))
     coordinator_port = str(os.getenv("JAX_COORDINATOR_PORT"))
+    device_list = {os.getenv("CUDA_VISIBLE_DEVICES")}
+    if len(device_list) == 0:
+      device_list = None
     jax.distributed.initialize(
         coordinator_address=f"{coordinator_ip}:{coordinator_port}",
         num_processes=int(os.getenv("NNODES")),
         process_id=int(os.getenv("NODE_RANK")),
+        local_device_ids=device_list,
     )
     max_logging.log(f"JAX global devices: {jax.devices()}")
 

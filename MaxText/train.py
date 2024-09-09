@@ -692,7 +692,8 @@ def train_loop(config, state=None):
 
   if checkpoint_manager is not None:
     checkpoint_manager.wait_until_finished()
-  write_metrics(writer, local_metrics_file, running_gcs_metrics, metrics, config.steps - 1, config)  # final step metrics
+  if 'metrics' in locals(): # metrics might not exist if the previoius training run completed
+    write_metrics(writer, local_metrics_file, running_gcs_metrics, metrics, config.steps - 1, config)  # final step metrics
   max_utils.close_summary_writer(writer)
   record_goodput(recorder, config, job_end=True)
   clear_buffered_metrics()

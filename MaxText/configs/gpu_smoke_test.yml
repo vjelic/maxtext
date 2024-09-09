@@ -1,15 +1,51 @@
 base_config: "base.yml"
 
+run_name: "gpu_smoke"
 hardware: "gpu"
-attention: "dot_product"
-base_emb_dim: 8
-base_emb_dim: 8
-base_num_query_heads: 4
-base_num_kv_heads: 4
-base_mlp_dim: 32
+#attention: "dot_product"
+attention: "cudnn_flash_te"
+# base_emb_dim: 128
+# base_emb_dim: 128
+# base_num_query_heads: 128
+# base_num_kv_heads: 128
+# base_mlp_dim: 128
+# base_num_decoder_layers: 8
+# head_dim: 128
+
+remat_policy: "full"
+
+base_emb_dim: 12288
+base_num_query_heads: 96
+base_num_kv_heads: 96
+base_mlp_dim: 49152
 base_num_decoder_layers: 8
-head_dim: 16
-per_device_batch_size: 2
+head_dim: 128
+trainable_position_size: 16384
+mlp_activations: ["gelu"]
+vocab_size: 50304
+enable_dropout: False
+logits_via_embedding: True
+normalize_embedding_logits: False
+logits_dot_in_fp32: False
+normalization_layer_epsilon: 1.e-05
+use_iota_embed: True
+fused_qkv: True
+
+
+per_device_batch_size: 8
 max_target_length: 1024
 dataset_type: "synthetic"
-steps: 10
+steps: 11
+
+dcn_data_parallelism: 1
+dcn_fsdp_parallelism: -1
+dcn_pipeline_parallelism: 1
+dcn_tensor_parallelism: 1
+dcn_sequence_parallelism: 1
+ici_fsdp_parallelism: 8
+ici_data_parallelism: 1
+ici_sequence_parallelism: 1
+ici_tensor_parallelism: 1
+ici_pipeline_parallelism: 1
+
+
