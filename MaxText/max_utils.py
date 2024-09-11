@@ -75,8 +75,6 @@ def calculate_num_params_from_pytree(params):
 def calculate_total_params_per_chip(params):
   """Calculate total paramsper chip."""
   def calculate_leaf_params_per_chip(arr):
-    if type(arr) is jax.ShapeDtypeStruct:
-      return np.prod(arr.shape)
     shard = arr.addressable_shards[0]
     return np.prod(shard.data.shape)
 
