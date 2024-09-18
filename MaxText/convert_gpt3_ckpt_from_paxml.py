@@ -24,7 +24,7 @@ python MaxText/convert_gpt3_ckpt_from_paxml.py \
 True cmd for gpt3-175b:
 
 The script is memory demanding, requires at least 250 GiB in cpu and cumulative TPU memory of all devices should be
-  above ~4.2 TiB (175 billion param * 4 byte/param * 3 (model var and 2 opt momentums) * 2 copies in converting) 
+  above ~4.2 TiB (175 billion param * 4 byte/param * 3 (model var and 2 opt momentums) * 2 copies in converting)
 
 python MaxText/convert_gpt3_ckpt_from_paxml.py \
   --paxml-ckpt-path=gs://mlperf-llm-public2/gpt3_spmd1x64x24_tpuv4-3072_v84_20221101/checkpoints/checkpoint_00004000 \
@@ -73,123 +73,259 @@ def check_memory():
     limit = stats["bytes_limit"]
     max_logging.log(f"tpu memory: Using {fmt_size(used)} / {fmt_size(limit)} ({used/limit:%}) on {d}")
 
+def load_local_checkpoint(file_path, transform_fn=None):
+    """Load a checkpoint file from a local path."""
+    print(f"Attempting to load local checkpoint from: {file_path}")
+    if not os.path.exists(file_path):
+        raise FileNotFoundError(f"Checkpoint file not found: {file_path}")
 
-def convert(paxml_ckpt_path, maxtext_model_name, base_output_directory, run_name):
+    spec = {
+        "driver": "zarr",
+        "kvstore": {
+            "driver": "file",
+            "path": file_path,
+        },
+    }
+
+    print("Opening and reading checkpoint file...")
+    arr = ts.open(spec, open=True).result().read().result()
+    if transform_fn is not None:
+        arr = transform_fn(arr)
+    print("Local checkpoint loaded successfully.")
+    return arr
+
+def convert(paxml_ckpt_path, maxtext_model_name, base_output_directory, run_name, use_local_ckpt=False):
   """convert ckpt."""
+
+  print(f"Starting conversion process...")
+  print(f"Checkpoint path: {paxml_ckpt_path}")
+  print(f"MaxText model name: {maxtext_model_name}")
+  print(f"Base output directory: {base_output_directory}")
+  print(f"Run name: {run_name}")
+  print(f"Using local checkpoint: {use_local_ckpt}")
 
   base_args = [
       "",
-      "MaxText/configs/base.yml",  # base arg
+      "maxtext/MaxText/configs/base.yml",  # base arg
+      "dtype=bfloat16",
+#      "attention=cudnn_flash_te",
       "per_device_batch_size=1",
-      "ici_fsdp_parallelism=-1",
+      "dcn_data_parallelism=1",
+      "dcn_fsdp_parallelism=-1",
+      "dcn_pipeline_parallelism=1",
+      "dcn_tensor_parallelism=1",
+      "dcn_sequence_parallelism=1",
+      "ici_fsdp_parallelism=8",
       "ici_tensor_parallelism=1",
+      "ici_pipeline_parallelism=1",
+      "scan_layers=false",
       f"model_name={maxtext_model_name}",
       f"run_name={run_name}",
       f"base_output_directory={base_output_directory}",
-      "checkpoint_period=1",
+      # "checkpoint_period=1",
       "async_checkpointing=false",
+      "hardware=gpu",
+      "remat_policy=full",
+      "dataset_type=synthetic",
   ]
+
+  print("Initializing pyconfig...")
   pyconfig.initialize(base_args)
   cfg = pyconfig.config
+  if cfg.enable_checkpointing:
+    from pathlib import Path
+    Path(cfg.checkpoint_dir).mkdir( parents=True, exist_ok=True )
+
+  print("Initializing random keys...")
   init_rng, _ = random.split(random.PRNGKey(cfg.init_weights_seed), 2)
+  print("Creating device mesh...")
   devices_array = max_utils.create_device_mesh(cfg)
   mesh = Mesh(devices_array, cfg.mesh_axes)
 
+  print("Configuring quantization...")
   quant = quantizations.configure_quantization(cfg)
+
+  print("Initializing Transformer model, lr scheduler, optimizer...")
   model = Transformer(cfg, mesh, quant=quant)
   learning_rate_schedule = max_utils.create_learning_rate_schedule(cfg)
   tx = optimizers.get_optimizer(cfg, learning_rate_schedule)
 
+
+  print("Creating checkpoint manager...")
   checkpoint_manager = checkpointing.create_orbax_checkpoint_manager(
       cfg.checkpoint_dir,
       cfg.enable_checkpointing,
       cfg.async_checkpointing,
-      cfg.checkpoint_period,
+      1,
   )
 
+  print("setting up training state")
   state, _, _ = max_utils.setup_training_state(model, None, tx, cfg, init_rng, mesh, checkpoint_manager)
+  print("start")
   max_logging.log("start")
   check_memory()
 
   # maxtext keystr: (paxml keystr, transform_fn)
-  keystr_map = {
-      "['token_embedder']['embedding']": (".params.lm.softmax.logits_ffn.linear.w", lambda x: x.T),
-      "['decoder']['position_embedder']['embedding']": (".params.lm.position_emb.emb_var", None),
-      "['decoder']['layers']['pre_self_attention_norm']['scale']": (
-          ".params.lm.transformer.repeat.sub.x_layers_0.layer_norm.scale",
-          lambda x: np.moveaxis(x, 0, cfg.param_scan_axis),
-      ),
-      "['decoder']['layers']['pre_self_attention_norm']['bias']": (
-          ".params.lm.transformer.repeat.sub.x_layers_0.layer_norm.bias",
-          lambda x: np.moveaxis(x, 0, cfg.param_scan_axis),
-      ),
-      "['decoder']['layers']['self_attention']['query']['kernel']": (
-          ".params.lm.transformer.repeat.sub.x_layers_0.self_attention.combined_qkv.w",
-          lambda x: np.moveaxis(x[:, 0], 0, cfg.param_scan_axis),
-      ),
-      "['decoder']['layers']['self_attention']['query']['bias']": (
-          ".params.lm.transformer.repeat.sub.x_layers_0.self_attention.combined_qkv.b",
-          lambda x: np.moveaxis(x[:, 0], 0, cfg.param_scan_axis),
-      ),
-      "['decoder']['layers']['self_attention']['key']['kernel']": (
-          ".params.lm.transformer.repeat.sub.x_layers_0.self_attention.combined_qkv.w",
-          lambda x: np.moveaxis(x[:, 1], 0, cfg.param_scan_axis),
-      ),
-      "['decoder']['layers']['self_attention']['key']['bias']": (
-          ".params.lm.transformer.repeat.sub.x_layers_0.self_attention.combined_qkv.b",
-          lambda x: np.moveaxis(x[:, 1], 0, cfg.param_scan_axis),
-      ),
-      "['decoder']['layers']['self_attention']['value']['kernel']": (
-          ".params.lm.transformer.repeat.sub.x_layers_0.self_attention.combined_qkv.w",
-          lambda x: np.moveaxis(x[:, 2], 0, cfg.param_scan_axis),
-      ),
-      "['decoder']['layers']['self_attention']['value']['bias']": (
-          ".params.lm.transformer.repeat.sub.x_layers_0.self_attention.combined_qkv.b",
-          lambda x: np.moveaxis(x[:, 2], 0, cfg.param_scan_axis),
-      ),
-      "['decoder']['layers']['self_attention']['qkv_proj']['kernel']": (
-          ".params.lm.transformer.repeat.sub.x_layers_0.self_attention.combined_qkv.w",
-          lambda x: np.moveaxis(x, [2, 0], [0, cfg.param_scan_axis]),
-      ),
-      "['decoder']['layers']['self_attention']['qkv_proj']['bias']": (
-          ".params.lm.transformer.repeat.sub.x_layers_0.self_attention.combined_qkv.b",
-          lambda x: np.moveaxis(x, 0, cfg.param_scan_axis),
-      ),
-      "['decoder']['layers']['self_attention']['out']['kernel']": (
-          ".params.lm.transformer.repeat.sub.x_layers_0.self_attention.post.w",
-          lambda x: np.moveaxis(x, [0, 1], [cfg.param_scan_axis, -1]),
-      ),
-      "['decoder']['layers']['self_attention']['out']['bias']": (
-          ".params.lm.transformer.repeat.sub.x_layers_0.self_attention.post.b",
-          lambda x: np.moveaxis(x, 0, cfg.param_scan_axis),
-      ),
-      "['decoder']['layers']['mlp']['mlp_layer_norm']['scale']": (
-          ".params.lm.transformer.repeat.sub.x_layers_0.ff_layer.layer_norm.scale",
-          lambda x: np.moveaxis(x, 0, cfg.param_scan_axis),
-      ),
-      "['decoder']['layers']['mlp']['mlp_layer_norm']['bias']": (
-          ".params.lm.transformer.repeat.sub.x_layers_0.ff_layer.layer_norm.bias",
-          lambda x: np.moveaxis(x, 0, cfg.param_scan_axis),
-      ),
-      "['decoder']['layers']['mlp']['wi']['kernel']": (
-          ".params.lm.transformer.repeat.sub.x_layers_0.ff_layer.ffn_layer1.linear.w",
-          lambda x: np.moveaxis(x, 0, cfg.param_scan_axis),
-      ),
-      "['decoder']['layers']['mlp']['wi']['bias']": (
-          ".params.lm.transformer.repeat.sub.x_layers_0.ff_layer.ffn_layer1.bias.b",
-          lambda x: np.moveaxis(x, 0, cfg.param_scan_axis),
-      ),
-      "['decoder']['layers']['mlp']['wo']['kernel']": (
-          ".params.lm.transformer.repeat.sub.x_layers_0.ff_layer.ffn_layer2.linear.w",
-          lambda x: np.moveaxis(x, 0, cfg.param_scan_axis),
-      ),
-      "['decoder']['layers']['mlp']['wo']['bias']": (
-          ".params.lm.transformer.repeat.sub.x_layers_0.ff_layer.ffn_layer2.bias.b",
-          lambda x: np.moveaxis(x, 0, cfg.param_scan_axis),
-      ),
-      "['decoder']['decoder_norm']['scale']": (".params.lm.final_ln.scale", lambda x: x.T),
-      "['decoder']['decoder_norm']['bias']": (".params.lm.final_ln.bias", None),
-  }
+  if (cfg.scan_layers):
+    keystr_map = {
+        "['token_embedder']['embedding']": (".params.lm.softmax.logits_ffn.linear.w", lambda x: x.T),
+        "['decoder']['position_embedder']['embedding']": (".params.lm.position_emb.emb_var", None),
+        "['decoder']['layers']['pre_self_attention_norm']['scale']": (
+            ".params.lm.transformer.repeat.sub.x_layers_0.layer_norm.scale",
+            lambda x: np.moveaxis(x, 0, cfg.param_scan_axis),
+        ),
+        "['decoder']['layers']['pre_self_attention_norm']['bias']": (
+            ".params.lm.transformer.repeat.sub.x_layers_0.layer_norm.bias",
+            lambda x: np.moveaxis(x, 0, cfg.param_scan_axis),
+        ),
+        "['decoder']['layers']['self_attention']['query']['kernel']": (
+            ".params.lm.transformer.repeat.sub.x_layers_0.self_attention.combined_qkv.w",
+            lambda x: np.moveaxis(x[:, 0], 0, cfg.param_scan_axis),
+        ),
+        "['decoder']['layers']['self_attention']['query']['bias']": (
+            ".params.lm.transformer.repeat.sub.x_layers_0.self_attention.combined_qkv.b",
+            lambda x: np.moveaxis(x[:, 0], 0, cfg.param_scan_axis),
+        ),
+        "['decoder']['layers']['self_attention']['key']['kernel']": (
+            ".params.lm.transformer.repeat.sub.x_layers_0.self_attention.combined_qkv.w",
+            lambda x: np.moveaxis(x[:, 1], 0, cfg.param_scan_axis),
+        ),
+        "['decoder']['layers']['self_attention']['key']['bias']": (
+            ".params.lm.transformer.repeat.sub.x_layers_0.self_attention.combined_qkv.b",
+            lambda x: np.moveaxis(x[:, 1], 0, cfg.param_scan_axis),
+        ),
+        "['decoder']['layers']['self_attention']['value']['kernel']": (
+            ".params.lm.transformer.repeat.sub.x_layers_0.self_attention.combined_qkv.w",
+            lambda x: np.moveaxis(x[:, 2], 0, cfg.param_scan_axis),
+        ),
+        "['decoder']['layers']['self_attention']['value']['bias']": (
+            ".params.lm.transformer.repeat.sub.x_layers_0.self_attention.combined_qkv.b",
+            lambda x: np.moveaxis(x[:, 2], 0, cfg.param_scan_axis),
+        ),
+        "['decoder']['layers']['self_attention']['qkv_proj']['kernel']": (
+            ".params.lm.transformer.repeat.sub.x_layers_0.self_attention.combined_qkv.w",
+            lambda x: np.moveaxis(x, [2, 0], [0, cfg.param_scan_axis]),
+        ),
+        "['decoder']['layers']['self_attention']['qkv_proj']['bias']": (
+            ".params.lm.transformer.repeat.sub.x_layers_0.self_attention.combined_qkv.b",
+            lambda x: np.moveaxis(x, 0, cfg.param_scan_axis),
+        ),
+        "['decoder']['layers']['self_attention']['out']['kernel']": (
+            ".params.lm.transformer.repeat.sub.x_layers_0.self_attention.post.w",
+            lambda x: np.moveaxis(x, [0, 1], [cfg.param_scan_axis, -1]),
+        ),
+        "['decoder']['layers']['self_attention']['out']['bias']": (
+            ".params.lm.transformer.repeat.sub.x_layers_0.self_attention.post.b",
+            lambda x: np.moveaxis(x, 0, cfg.param_scan_axis),
+        ),
+        "['decoder']['layers']['mlp']['mlp_layer_norm']['scale']": (
+            ".params.lm.transformer.repeat.sub.x_layers_0.ff_layer.layer_norm.scale",
+            lambda x: np.moveaxis(x, 0, cfg.param_scan_axis),
+        ),
+        "['decoder']['layers']['mlp']['mlp_layer_norm']['bias']": (
+            ".params.lm.transformer.repeat.sub.x_layers_0.ff_layer.layer_norm.bias",
+            lambda x: np.moveaxis(x, 0, cfg.param_scan_axis),
+        ),
+        "['decoder']['layers']['mlp']['wi']['kernel']": (
+            ".params.lm.transformer.repeat.sub.x_layers_0.ff_layer.ffn_layer1.linear.w",
+            lambda x: np.moveaxis(x, 0, cfg.param_scan_axis),
+        ),
+        "['decoder']['layers']['mlp']['wi']['bias']": (
+            ".params.lm.transformer.repeat.sub.x_layers_0.ff_layer.ffn_layer1.bias.b",
+            lambda x: np.moveaxis(x, 0, cfg.param_scan_axis),
+        ),
+        "['decoder']['layers']['mlp']['wo']['kernel']": (
+            ".params.lm.transformer.repeat.sub.x_layers_0.ff_layer.ffn_layer2.linear.w",
+            lambda x: np.moveaxis(x, 0, cfg.param_scan_axis),
+        ),
+        "['decoder']['layers']['mlp']['wo']['bias']": (
+            ".params.lm.transformer.repeat.sub.x_layers_0.ff_layer.ffn_layer2.bias.b",
+            lambda x: np.moveaxis(x, 0, cfg.param_scan_axis),
+        ),
+        "['decoder']['decoder_norm']['scale']": (".params.lm.final_ln.scale", lambda x: x.T),
+        "['decoder']['decoder_norm']['bias']": (".params.lm.final_ln.bias", None),
+    }
+  else:
+    keystr_map = {
+        "['token_embedder']['embedding']": (".params.lm.softmax.logits_ffn.linear.w", lambda x: x.T),
+        "['decoder']['position_embedder']['embedding']": (".params.lm.position_emb.emb_var", None),
+        "['decoder']['decoder_norm']['scale']": (".params.lm.final_ln.scale", lambda x: x.T),
+        "['decoder']['decoder_norm']['bias']": (".params.lm.final_ln.bias", None),
+    }
+    for l in range(cfg.base_num_decoder_layers):
+        keystr_map[f"['decoder']['layers_{l}']['pre_self_attention_norm']['scale']"] = (
+            ".params.lm.transformer.repeat.sub.x_layers_0.layer_norm.scale",
+            lambda x: x[l]
+        )
+        keystr_map[f"['decoder']['layers_{l}']['pre_self_attention_norm']['bias']"] = (
+            ".params.lm.transformer.repeat.sub.x_layers_0.layer_norm.bias",
+            lambda x: x[l]
+        )
+        keystr_map[f"['decoder']['layers_{l}']['self_attention']['query']['kernel']"] = (
+            ".params.lm.transformer.repeat.sub.x_layers_0.self_attention.combined_qkv.w",
+            lambda x: x[l, 0]
+        )
+        keystr_map[f"['decoder']['layers_{l}']['self_attention']['query']['bias']"] = (
+            ".params.lm.transformer.repeat.sub.x_layers_0.self_attention.combined_qkv.b",
+            lambda x: x[l, 0]
+        )
+        keystr_map[f"['decoder']['layers_{l}']['self_attention']['key']['kernel']"] = (
+            ".params.lm.transformer.repeat.sub.x_layers_0.self_attention.combined_qkv.w",
+            lambda x: x[l, 1]
+        )
+        keystr_map[f"['decoder']['layers_{l}']['self_attention']['key']['bias']"] = (
+            ".params.lm.transformer.repeat.sub.x_layers_0.self_attention.combined_qkv.b",
+            lambda x: x[l, 1]
+        )
+        keystr_map[f"['decoder']['layers_{l}']['self_attention']['value']['kernel']"] = (
+            ".params.lm.transformer.repeat.sub.x_layers_0.self_attention.combined_qkv.w",
+            lambda x: x[l, 2]
+        )
+        keystr_map[f"['decoder']['layers_{l}']['self_attention']['value']['bias']"] = (
+            ".params.lm.transformer.repeat.sub.x_layers_0.self_attention.combined_qkv.b",
+            lambda x: x[l, 2]
+        )
+        keystr_map[f"['decoder']['layers_{l}']['self_attention']['qkv_proj']['kernel']"] = (
+            ".params.lm.transformer.repeat.sub.x_layers_0.self_attention.combined_qkv.w",
+            lambda x: np.moveaxis(x[l], 1, 0)
+        )
+        keystr_map[f"['decoder']['layers_{l}']['self_attention']['qkv_proj']['bias']"] = (
+            ".params.lm.transformer.repeat.sub.x_layers_0.self_attention.combined_qkv.b",
+            lambda x: x[l]
+        )
+        keystr_map[f"['decoder']['layers_{l}']['self_attention']['out']['kernel']"] = (
+            ".params.lm.transformer.repeat.sub.x_layers_0.self_attention.post.w",
+            lambda x: np.moveaxis(x[l], 0, -1)
+        )
+        keystr_map[f"['decoder']['layers_{l}']['self_attention']['out']['bias']"] = (
+            ".params.lm.transformer.repeat.sub.x_layers_0.self_attention.post.b",
+            lambda x: x[l]
+        )
+        keystr_map[f"['decoder']['layers_{l}']['mlp']['mlp_layer_norm']['scale']"] = (
+            ".params.lm.transformer.repeat.sub.x_layers_0.ff_layer.layer_norm.scale",
+            lambda x: x[l]
+        )
+        keystr_map[f"['decoder']['layers_{l}']['mlp']['mlp_layer_norm']['bias']"] = (
+            ".params.lm.transformer.repeat.sub.x_layers_0.ff_layer.layer_norm.bias",
+            lambda x: x[l]
+        )
+        keystr_map[f"['decoder']['layers_{l}']['mlp']['wi']['kernel']"] = (
+            ".params.lm.transformer.repeat.sub.x_layers_0.ff_layer.ffn_layer1.linear.w",
+            lambda x: x[l]
+        )
+        keystr_map[f"['decoder']['layers_{l}']['mlp']['wi']['bias']"] = (
+            ".params.lm.transformer.repeat.sub.x_layers_0.ff_layer.ffn_layer1.bias.b",
+            lambda x: x[l]
+        )
+        keystr_map[f"['decoder']['layers_{l}']['mlp']['wo']['kernel']"] = (
+            ".params.lm.transformer.repeat.sub.x_layers_0.ff_layer.ffn_layer2.linear.w",
+            lambda x: x[l]
+        )
+        keystr_map[f"['decoder']['layers_{l}']['mlp']['wo']['bias']"] = (
+            ".params.lm.transformer.repeat.sub.x_layers_0.ff_layer.ffn_layer2.bias.b",
+            lambda x: x[l]
+        )
+
 
   state_map = {
       ".step": ("step", None),
@@ -228,23 +364,34 @@ def convert(paxml_ckpt_path, maxtext_model_name, base_output_directory, run_name
 
   memory_metrics = {"max_cpu_bytes": 0}
 
-  bucket_name, paxml_ckpt_prefix = paxml_ckpt_path[len("gs://") :].split("/", 1)
+  if not use_local_ckpt:
+    bucket_name, paxml_ckpt_prefix = paxml_ckpt_path[len("gs://") :].split("/", 1)
 
   def map_fn(key_path, value):
     key_path_str = jax.tree_util.keystr(key_path)
     file_path, transform_fn = state_map[key_path_str]
-    full_path = os.path.join(paxml_ckpt_prefix, file_path)
-    spec = {"driver": "zarr", "metadata_key": ".zarray", "kvstore": {}}
-    spec["kvstore"] = {
-        "bucket": bucket_name,
-        "driver": "gcs",
-        "path": full_path,
-    }
 
-    arr = ts.open(ts.Spec(spec), open=True).result().read().result()
-    if transform_fn is not None:
-      arr = transform_fn(arr)
+    if use_local_ckpt:
+        print(f"Loading local checkpoint for {key_path_str}...")
+        full_path = os.path.join(paxml_ckpt_path, file_path)
+        arr = load_local_checkpoint(full_path, transform_fn)
+    else:
+        bucket_name, paxml_ckpt_prefix = paxml_ckpt_path[len("gs://"):].split("/", 1)
+        full_path = os.path.join(paxml_ckpt_prefix, file_path)
+        spec = {
+            "driver": "zarr",
+            "metadata_key": ".zarray",
+            "kvstore": {
+                "bucket": bucket_name,
+                "driver": "gcs",
+                "path": full_path,
+            }
+        }
+        arr = ts.open(ts.Spec(spec), open=True).result().read().result()
+        if transform_fn is not None:
+            arr = transform_fn(arr)
 
+    print(f"Asserting shapes for {key_path_str}...")
     assert value.shape == arr.shape, f"{key_path}, {value.shape}, {arr.shape}"
     shape = value.shape
     sharding = value.sharding
@@ -282,19 +429,23 @@ def convert(paxml_ckpt_path, maxtext_model_name, base_output_directory, run_name
 
 
 if __name__ == "__main__":
-  parser = argparse.ArgumentParser()
-  parser.add_argument(
-      "--paxml-ckpt-path",
-      type=str,
-      default="gs://mlperf-llm-public2/gpt3_spmd1x64x24_tpuv4-3072_v84_20221101/checkpoints/checkpoint_00004000",
-      required=True,
-  )
-  parser.add_argument("--maxtext-model-name", choices=["gpt3-175b", "gpt3-52k"], type=str, required=True)
-  parser.add_argument("--base-output-directory", type=str, required=True)
-  parser.add_argument("--run-name", type=str, required=True)
+    parser = argparse.ArgumentParser()
+    parser.add_argument(
+        "--ckpt-path",
+        type=str,
+        required=True,
+        help="Path to the checkpoint. Use 'gs://' prefix for GCS bucket or local path.",
+    )
+    parser.add_argument("--maxtext-model-name", choices=["gpt3-175b", "gpt3-52k"], type=str, required=True)
+    parser.add_argument("--base-output-directory", type=str, required=True)
+    parser.add_argument("--run-name", type=str, required=True)
+    parser.add_argument("--use-local-ckpt", action="store_true", help="Use local checkpoint instead of GCS bucket")
 
-  args = parser.parse_args()
-  if not args.paxml_ckpt_path.startswith("gs://"):
-    raise ValueError("--paxml-ckpt-path should be a gcs path starting with gs://")
+    args = parser.parse_args()
 
-  convert(args.paxml_ckpt_path, args.maxtext_model_name, args.base_output_directory, args.run_name)
+    if args.use_local_ckpt and args.ckpt_path.startswith("gs://"):
+        raise ValueError("When using --use-local-ckpt, --ckpt-path should be a local path, not a GCS path.")
+    elif not args.use_local_ckpt and not args.ckpt_path.startswith("gs://"):
+        raise ValueError("When not using --use-local-ckpt, --ckpt-path should be a GCS path starting with gs://")
+
+    convert(args.ckpt_path, args.maxtext_model_name, args.base_output_directory, args.run_name, args.use_local_ckpt)
