@@ -599,6 +599,7 @@ def train_loop(config, state=None):
     p_eval_step = None
     print("Loaded compiled function!", flush=True)
   else:
+    max_logging.log("running jit")
     p_train_step = jax.jit(
         functional_train,
         in_shardings=in_shard_train,
@@ -622,6 +623,7 @@ def train_loop(config, state=None):
   running_gcs_metrics = [] if config.gcs_metrics else None
 
   start_step = get_first_step(state)  # this is the start_step for training
+  max_logging.log(f"start_step: {start_step} end step: {config.steps}")
   first_profiling_step = start_step + config.skip_first_n_steps_for_profiler
   if config.profiler != "" and first_profiling_step >= config.steps:
     raise ValueError("Profiling requested but initial profiling step set past training final step")
@@ -710,6 +712,9 @@ def main(argv: Sequence[str]) -> None:
   config = pyconfig.config
   validate_train_config(config)
   os.environ["TFDS_DATA_DIR"] = config.dataset_path
+  if config.enable_checkpointing:
+    from pathlib import Path
+    Path(config.checkpoint_dir).mkdir( parents=True, exist_ok=True )
   vertex_tensorboard_manager = VertexTensorboardManager()
   if config.use_vertex_tensorboard or os.environ.get("UPLOAD_DATA_TO_TENSORBOARD"):
     vertex_tensorboard_manager.configure_vertex_tensorboard(config)
