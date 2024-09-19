@@ -52,7 +52,7 @@ import max_logging
 from psutil import Process
 from train import save_checkpoint
 import argparse
-
+import copy
 
 def fmt_size(num_bytes: int) -> str:
   assert num_bytes > 0
@@ -348,16 +348,16 @@ def convert(paxml_ckpt_path, maxtext_model_name, base_output_directory, run_name
   if (cache_weights):
      cache_item_limit = None
      if (cache_weight_items >= 0):
-        cache_item_limit = len(keystr_map) * cfg.base_num_decoder_layers if cache_weight_items == 0 else cache_weight_items
+        cache_item_limit = int(len(keystr_map)/cfg.base_num_decoder_layers) if cache_weight_items == 0 else cache_weight_items
 
-  print(f"Cache limit: {cache_item_limit}")
+  max_logging.log(f"Cache limit: {cache_item_limit}")
   import functools
   @functools.lru_cache(maxsize=cache_item_limit)
   def load_item(file_path):
 
     if use_local_ckpt:
         full_path = os.path.join(paxml_ckpt_path, file_path)
-        print(f"Attempting to load local checkpoint from: {file_path}")
+        max_logging.log(f"Attempting to load local checkpoint from: {file_path}")
         if not os.path.exists(full_path):
             raise FileNotFoundError(f"Checkpoint file not found: {file_path}")
         spec = {
@@ -389,6 +389,10 @@ def convert(paxml_ckpt_path, maxtext_model_name, base_output_directory, run_name
     # transform_fn may be different for each use of the weight
     if transform_fn is not None:
         arr = transform_fn(arr)
+        if (cache_weights):
+           # make a copy of the returned value because array slicing can return a reference using the original array
+            # which will leak memory and eventually OOM
+           arr = copy.deepcopy(arr)
 
     print(f"Checking shapes for {key_path}...")
     assert value.shape == arr.shape, f"{key_path}, {value.shape}, {arr.shape}"
@@ -405,9 +409,9 @@ def convert(paxml_ckpt_path, maxtext_model_name, base_output_directory, run_name
     memory_metrics["max_cpu_bytes"] = max(cpu_bytes, memory_metrics["max_cpu_bytes"])
 
     # collect cpu memory back asap
-    arr = None
     if (not cache_weights):
        del arr
+    arr = None
     gc.collect()
     max_logging.log(f"{key_path} finished")
     check_memory()
@@ -415,8 +419,6 @@ def convert(paxml_ckpt_path, maxtext_model_name, base_output_directory, run_name
 
   converted_state = jax.tree_util.tree_map_with_path(map_fn, state)
   max_logging.log("converted state finished")
-  del weight_cache
-  weight_cache=None
   gc.collect()
   check_memory()
 
