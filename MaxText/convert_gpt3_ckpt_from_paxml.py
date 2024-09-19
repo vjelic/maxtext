@@ -71,30 +71,9 @@ def check_memory():
     stats = d.memory_stats()
     used = stats["bytes_in_use"]
     limit = stats["bytes_limit"]
-    max_logging.log(f"tpu memory: Using {fmt_size(used)} / {fmt_size(limit)} ({used/limit:%}) on {d}")
+    max_logging.log(f"device memory: Using {fmt_size(used)} / {fmt_size(limit)} ({used/limit:%}) on {d}")
 
-def load_local_checkpoint(file_path, transform_fn=None):
-    """Load a checkpoint file from a local path."""
-    print(f"Attempting to load local checkpoint from: {file_path}")
-    if not os.path.exists(file_path):
-        raise FileNotFoundError(f"Checkpoint file not found: {file_path}")
-
-    spec = {
-        "driver": "zarr",
-        "kvstore": {
-            "driver": "file",
-            "path": file_path,
-        },
-    }
-
-    print("Opening and reading checkpoint file...")
-    arr = ts.open(spec, open=True).result().read().result()
-    if transform_fn is not None:
-        arr = transform_fn(arr)
-    print("Local checkpoint loaded successfully.")
-    return arr
-
-def convert(paxml_ckpt_path, maxtext_model_name, base_output_directory, run_name, use_local_ckpt=False):
+def convert(paxml_ckpt_path, maxtext_model_name, base_output_directory, run_name, use_local_ckpt=False, cache_weights=False, cache_weight_items=-1):
   """convert ckpt."""
 
   print(f"Starting conversion process...")
@@ -103,6 +82,7 @@ def convert(paxml_ckpt_path, maxtext_model_name, base_output_directory, run_name
   print(f"Base output directory: {base_output_directory}")
   print(f"Run name: {run_name}")
   print(f"Using local checkpoint: {use_local_ckpt}")
+  print(f"Cache weights in DRAM: {cache_weights}")
 
   base_args = [
       "",
@@ -364,17 +344,29 @@ def convert(paxml_ckpt_path, maxtext_model_name, base_output_directory, run_name
 
   memory_metrics = {"max_cpu_bytes": 0}
 
-  if not use_local_ckpt:
-    bucket_name, paxml_ckpt_prefix = paxml_ckpt_path[len("gs://") :].split("/", 1)
+  cache_item_limit = 0
+  if (cache_weights):
+     cache_item_limit = None
+     if (cache_weight_items >= 0):
+        cache_item_limit = len(keystr_map) * cfg.base_num_decoder_layers if cache_weight_items == 0 else cache_weight_items
 
-  def map_fn(key_path, value):
-    key_path_str = jax.tree_util.keystr(key_path)
-    file_path, transform_fn = state_map[key_path_str]
+  print(f"Cache limit: {cache_item_limit}")
+  import functools
+  @functools.lru_cache(maxsize=cache_item_limit)
+  def load_item(file_path):
 
     if use_local_ckpt:
-        print(f"Loading local checkpoint for {key_path_str}...")
         full_path = os.path.join(paxml_ckpt_path, file_path)
-        arr = load_local_checkpoint(full_path, transform_fn)
+        print(f"Attempting to load local checkpoint from: {file_path}")
+        if not os.path.exists(full_path):
+            raise FileNotFoundError(f"Checkpoint file not found: {file_path}")
+        spec = {
+            "driver": "zarr",
+            "kvstore": {
+                "driver": "file",
+                "path": full_path,
+            },
+        }
     else:
         bucket_name, paxml_ckpt_prefix = paxml_ckpt_path[len("gs://"):].split("/", 1)
         full_path = os.path.join(paxml_ckpt_prefix, file_path)
@@ -387,11 +379,18 @@ def convert(paxml_ckpt_path, maxtext_model_name, base_output_directory, run_name
                 "path": full_path,
             }
         }
-        arr = ts.open(ts.Spec(spec), open=True).result().read().result()
-        if transform_fn is not None:
-            arr = transform_fn(arr)
+    return ts.open(ts.Spec(spec), open=True).result().read().result()
 
-    print(f"Asserting shapes for {key_path_str}...")
+  def map_fn(key_path, value):
+    max_logging.log(f"running {key_path}")
+    key_path_str = jax.tree_util.keystr(key_path)
+    file_path, transform_fn = state_map[key_path_str]
+    arr = load_item(file_path)
+    # transform_fn may be different for each use of the weight
+    if transform_fn is not None:
+        arr = transform_fn(arr)
+
+    print(f"Checking shapes for {key_path}...")
     assert value.shape == arr.shape, f"{key_path}, {value.shape}, {arr.shape}"
     shape = value.shape
     sharding = value.sharding
@@ -401,20 +400,24 @@ def convert(paxml_ckpt_path, maxtext_model_name, base_output_directory, run_name
         [jax.device_put(np.array(arr[index]), d) for d, index in sharding.addressable_devices_indices_map(shape).items()],
     )
 
-    # log peak cpu memory
+    # log peak cpu memory - this will increase if the cache is enabled...
     cpu_bytes = Process().memory_info().rss
     memory_metrics["max_cpu_bytes"] = max(cpu_bytes, memory_metrics["max_cpu_bytes"])
 
     # collect cpu memory back asap
     arr = None
-    del arr
+    if (not cache_weights):
+       del arr
     gc.collect()
-    max_logging.log(f"{key_path_str} finished")
+    max_logging.log(f"{key_path} finished")
     check_memory()
     return result
 
   converted_state = jax.tree_util.tree_map_with_path(map_fn, state)
   max_logging.log("converted state finished")
+  del weight_cache
+  weight_cache=None
+  gc.collect()
   check_memory()
 
   if save_checkpoint(checkpoint_manager, converted_state.step, converted_state):
@@ -440,6 +443,8 @@ if __name__ == "__main__":
     parser.add_argument("--base-output-directory", type=str, required=True)
     parser.add_argument("--run-name", type=str, required=True)
     parser.add_argument("--use-local-ckpt", action="store_true", help="Use local checkpoint instead of GCS bucket")
+    parser.add_argument("--cache-weights", action="store_true", help="Cache weights in CPU RAM")
+    parser.add_argument("--cache-weight_items", type=int, default=0, help="Cache item limit. -1 for unlimited. If 0, auto-calculate as sizeof(keystr_map) * num_layers")
 
     args = parser.parse_args()
 
@@ -448,4 +453,4 @@ if __name__ == "__main__":
     elif not args.use_local_ckpt and not args.ckpt_path.startswith("gs://"):
         raise ValueError("When not using --use-local-ckpt, --ckpt-path should be a GCS path starting with gs://")
 
-    convert(args.ckpt_path, args.maxtext_model_name, args.base_output_directory, args.run_name, args.use_local_ckpt)
+    convert(args.ckpt_path, args.maxtext_model_name, args.base_output_directory, args.run_name, args.use_local_ckpt, args.cache_weights, args.cache_weight_items)
