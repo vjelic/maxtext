@@ -44,7 +44,6 @@ import checkpointing
 
 import numpy as np
 import tensorstore as ts
-
 import sys
 import jax
 import gc
@@ -53,6 +52,7 @@ from psutil import Process
 from train import save_checkpoint
 import argparse
 import copy
+import datetime
 
 def fmt_size(num_bytes: int) -> str:
   assert num_bytes > 0
@@ -66,14 +66,15 @@ def fmt_size(num_bytes: int) -> str:
 def check_memory():
   """print out cpu/tpu memory."""
   cpu_bytes = Process().memory_info().rss
-  max_logging.log(f"cpu memory: {fmt_size(cpu_bytes)}")
+  print(f"{datetime.datetime.now()}: cpu memory: {fmt_size(cpu_bytes)}")
   for d in jax.local_devices():
     stats = d.memory_stats()
-    used = stats["bytes_in_use"]
-    limit = stats["bytes_limit"]
-    max_logging.log(f"device memory: Using {fmt_size(used)} / {fmt_size(limit)} ({used/limit:%}) on {d}")
+    if stats is not None:
+        used = stats.get("bytes_in_use", 0)
+        limit = stats.get("bytes_limit", 0)
+        print(f"device memory: Using {fmt_size(used)} / {fmt_size(limit)} ({used/limit:%}) on {d}")
 
-def convert(paxml_ckpt_path, maxtext_model_name, base_output_directory, run_name, use_local_ckpt=False, cache_weights=False, cache_weight_items=-1):
+def convert(paxml_ckpt_path, maxtext_model_name, base_output_directory, run_name, use_local_ckpt=False, cache_weights=False, cache_weight_items=-1, scan = True, cpu = False):
   """convert ckpt."""
 
   print(f"Starting conversion process...")
@@ -87,7 +88,7 @@ def convert(paxml_ckpt_path, maxtext_model_name, base_output_directory, run_name
   base_args = [
       "",
       "maxtext/MaxText/configs/base.yml",  # base arg
-      "dtype=bfloat16",
+      # "dtype=bfloat16",
 #      "attention=cudnn_flash_te",
       "per_device_batch_size=1",
       "dcn_data_parallelism=1",
@@ -95,16 +96,16 @@ def convert(paxml_ckpt_path, maxtext_model_name, base_output_directory, run_name
       "dcn_pipeline_parallelism=1",
       "dcn_tensor_parallelism=1",
       "dcn_sequence_parallelism=1",
-      "ici_fsdp_parallelism=8",
+      f"ici_fsdp_parallelism={1 if cpu else 8}",
       "ici_tensor_parallelism=1",
       "ici_pipeline_parallelism=1",
-      "scan_layers=false",
+      f"scan_layers={scan}",
       f"model_name={maxtext_model_name}",
       f"run_name={run_name}",
       f"base_output_directory={base_output_directory}",
       # "checkpoint_period=1",
       "async_checkpointing=false",
-      "hardware=gpu",
+      f"hardware={'cpu' if cpu else 'gpu'}",
       "remat_policy=full",
       "dataset_type=synthetic",
   ]
@@ -142,7 +143,6 @@ def convert(paxml_ckpt_path, maxtext_model_name, base_output_directory, run_name
   print("setting up training state")
   state, _, _ = max_utils.setup_training_state(model, None, tx, cfg, init_rng, mesh, checkpoint_manager)
   print("start")
-  max_logging.log("start")
   check_memory()
 
   # maxtext keystr: (paxml keystr, transform_fn)
@@ -350,14 +350,14 @@ def convert(paxml_ckpt_path, maxtext_model_name, base_output_directory, run_name
      if (cache_weight_items >= 0):
         cache_item_limit = int(len(keystr_map)/cfg.base_num_decoder_layers) if cache_weight_items == 0 else cache_weight_items
 
-  max_logging.log(f"Cache limit: {cache_item_limit}")
+  print(f"Cache limit: {cache_item_limit}")
   import functools
   @functools.lru_cache(maxsize=cache_item_limit)
   def load_item(file_path):
 
     if use_local_ckpt:
         full_path = os.path.join(paxml_ckpt_path, file_path)
-        max_logging.log(f"Attempting to load local checkpoint from: {file_path}")
+        print(f"Attempting to load local checkpoint from: {file_path}")
         if not os.path.exists(full_path):
             raise FileNotFoundError(f"Checkpoint file not found: {file_path}")
         spec = {
@@ -382,7 +382,7 @@ def convert(paxml_ckpt_path, maxtext_model_name, base_output_directory, run_name
     return ts.open(ts.Spec(spec), open=True).result().read().result()
 
   def map_fn(key_path, value):
-    max_logging.log(f"running {key_path}")
+    print(f"running {key_path}")
     key_path_str = jax.tree_util.keystr(key_path)
     file_path, transform_fn = state_map[key_path_str]
     arr = load_item(file_path)
@@ -413,24 +413,25 @@ def convert(paxml_ckpt_path, maxtext_model_name, base_output_directory, run_name
        del arr
     arr = None
     gc.collect()
-    max_logging.log(f"{key_path} finished")
+    print(f"{key_path} finished")
     check_memory()
     return result
 
   converted_state = jax.tree_util.tree_map_with_path(map_fn, state)
-  max_logging.log("converted state finished")
+  print("converted state finished")
+  load_item.cache_clear()
   gc.collect()
   check_memory()
 
   if save_checkpoint(checkpoint_manager, converted_state.step, converted_state):
-    max_logging.log(f"saved a checkpoint at step {converted_state.step}")
+    print(f"saved a checkpoint at step {converted_state.step}")
   # Upon preemption, exit when and only when all ongoing saves are complete.
   if checkpoint_manager.reached_preemption(converted_state.step):
     checkpoint_manager.wait_until_finished()
     sys.exit()
 
-  max_logging.log(f"Peak cpu memory in a single process: {fmt_size(memory_metrics['max_cpu_bytes'])}")
-  max_logging.log("checkpoint converted and saved successfully.")
+  print(f"Peak cpu memory in a single process: {fmt_size(memory_metrics['max_cpu_bytes'])}")
+  print("checkpoint converted and saved successfully.")
 
 
 if __name__ == "__main__":
@@ -447,6 +448,8 @@ if __name__ == "__main__":
     parser.add_argument("--use-local-ckpt", action="store_true", help="Use local checkpoint instead of GCS bucket")
     parser.add_argument("--cache-weights", action="store_true", help="Cache weights in CPU RAM")
     parser.add_argument("--cache-weight_items", type=int, default=0, help="Cache item limit. -1 for unlimited. If 0, auto-calculate as sizeof(keystr_map) * num_layers")
+    parser.add_argument("--scan-layers", action="store_true", help="Scan layers")
+    parser.add_argument("--use-cpu", action="store_true", help="Use CPU instead of GPU")
 
     args = parser.parse_args()
 
@@ -455,4 +458,4 @@ if __name__ == "__main__":
     elif not args.use_local_ckpt and not args.ckpt_path.startswith("gs://"):
         raise ValueError("When not using --use-local-ckpt, --ckpt-path should be a GCS path starting with gs://")
 
-    convert(args.ckpt_path, args.maxtext_model_name, args.base_output_directory, args.run_name, args.use_local_ckpt, args.cache_weights, args.cache_weight_items)
+    convert(args.ckpt_path, args.maxtext_model_name, args.base_output_directory, args.run_name, args.use_local_ckpt, args.cache_weights, args.cache_weight_items, args.scan_layers, args.use_cpu)

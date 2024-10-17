@@ -23,7 +23,6 @@ limitations under the License.
 import datetime
 import os
 import sys
-from etils import epath
 import functools
 import time
 
@@ -68,6 +67,10 @@ from ml_goodput_measurement import monitoring
 Transformer = models.Transformer
 EPS = 1e-8
 _CHUNK_BYTE_SIZE = 2 * 1024 **3
+
+def calculate_perplexity(loss):
+    """Calculate perplexity from the loss (cross-entropy)."""
+    return jnp.exp(loss)
 
 
 def validate_train_config(config):
@@ -160,11 +163,13 @@ def write_metrics_to_tensorboard(writer, metrics, step, config, is_training=True
       full_log = step % config.log_period == 0
 
       max_logging.log(
+          f"{datetime.datetime.now()}: "
           f"completed step: {step}, seconds: {metrics['scalar']['perf/step_time_seconds']:.3f}, "
           f"TFLOP/s/device: {metrics['scalar']['perf/per_device_tflops_per_sec']:.3f}, "
           f"Tokens/s/device: {metrics['scalar']['perf/per_device_tokens_per_sec']:.3f}, "
           f"total_weights: {metrics['scalar']['learning/total_weights']}, "
-          f"loss: {metrics['scalar']['learning/loss']:.3f}"
+          f"loss: {metrics['scalar']['learning/loss']:.3f}, "
+          f"perplexity: {metrics['scalar']['learning/perplexity']:.3f}"
       )
 
       if full_log and jax.process_index() == 0:
@@ -381,6 +386,7 @@ def train_step(model, config, state, data, dropout_rng):
           "learning/grad_norm": max_utils.l2norm_pytree(grads),
           "learning/raw_grad_norm": max_utils.l2norm_pytree(raw_grads),
           "learning/param_norm": max_utils.l2norm_pytree(new_state.params),
+          "learning/perplexity": calculate_perplexity(loss),
       },
       "scalars": {},
   }
@@ -399,10 +405,12 @@ def eval_step(model, config, state, data, dropout_rng):
   total_weights = aux["total_weights"]
   moe_lb_loss = aux["moe_lb_loss"]
   metrics = {
-      "scalar": {"evaluation/loss": loss, 
+      "scalar": {"evaluation/loss": loss,
                  "evaluation/total_loss": total_loss,
                  "evaluation/total_weights": total_weights,
-                 "evaluation/moe_lb_loss": moe_lb_loss},
+                 "evaluation/moe_lb_loss": moe_lb_loss,
+                 "evaluation/perplexity": calculate_perplexity(loss),
+                },
 
   }
 
@@ -599,7 +607,6 @@ def train_loop(config, state=None):
     p_eval_step = None
     print("Loaded compiled function!", flush=True)
   else:
-    max_logging.log("running jit")
     p_train_step = jax.jit(
         functional_train,
         in_shardings=in_shard_train,
@@ -623,7 +630,7 @@ def train_loop(config, state=None):
   running_gcs_metrics = [] if config.gcs_metrics else None
 
   start_step = get_first_step(state)  # this is the start_step for training
-  max_logging.log(f"start_step: {start_step} end step: {config.steps}")
+  max_logging.log(f"{datetime.datetime.now()}: start_step: {start_step} end step: {config.steps}")
   first_profiling_step = start_step + config.skip_first_n_steps_for_profiler
   if config.profiler != "" and first_profiling_step >= config.steps:
     raise ValueError("Profiling requested but initial profiling step set past training final step")
@@ -643,6 +650,7 @@ def train_loop(config, state=None):
       record_goodput(recorder, config, step=step)
       with mesh, nn_partitioning.axis_rules(config.logical_axis_rules):
         state, metrics = p_train_step(state, example_batch, nextrng)
+        jax.block_until_ready(state)
 
     new_time = datetime.datetime.now()
     record_scalar_metrics(metrics, new_time - last_step_completion, per_device_tflops, learning_rate_schedule(step), per_device_tokens)
@@ -650,7 +658,7 @@ def train_loop(config, state=None):
 
     if checkpoint_manager is not None:
       if save_checkpoint(checkpoint_manager, int(step), state, config.dataset_type, data_iterator, config):
-        max_logging.log(f"saved a checkpoint at step {step}")
+        max_logging.log(f"{datetime.datetime.now()}: saved a checkpoint at step {step}")
 
       # Upon preemption, exit when and only when all ongoing saves are complete.
       if checkpoint_manager.reached_preemption(step):
@@ -678,7 +686,7 @@ def train_loop(config, state=None):
         cumulative_eval_metrics["scalar"]["eval/total_loss"] += float(eval_metrics["scalar"]["evaluation/total_loss"])
         cumulative_eval_metrics["scalar"]["eval/total_weights"] += float(eval_metrics["scalar"]["evaluation/total_weights"])
         cumulative_eval_metrics["scalar"]["eval/moe_lb_loss"] += float(eval_metrics["scalar"]["evaluation/moe_lb_loss"])
-        max_logging.log(f"Completed eval step {eval_step_count}")
+        max_logging.log(f"{datetime.datetime.now()}: Completed eval step {eval_step_count}")
         eval_step_count += 1
       eval_loss = cumulative_eval_metrics["scalar"]["eval/total_loss"] / (cumulative_eval_metrics["scalar"]["eval/total_weights"] + EPS) + cumulative_eval_metrics["scalar"]["eval/moe_lb_loss"] / eval_step_count
       cumulative_eval_metrics["scalar"]["eval/avg_loss"] = eval_loss

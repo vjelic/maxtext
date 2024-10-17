@@ -259,23 +259,24 @@ def initialize_jax_for_gpu():
 
 
 def initialize_jax_for_cpu():
-  """Jax distributed initialize for CPUs. Includes retries until the coordinator is ready."""
-  coordinator_ip_address = get_coordinator_ip_address()
-  coordinator_address = (
-      coordinator_ip_address + ":1234"
-  )  # JAX coordinator port used in XPK
-  # Env variables to be set in XPK or otherwise
-  job_index = int(os.environ.get("JOB_INDEX"))
-  job_completion_index = int(os.environ.get("JOB_COMPLETION_INDEX"))
-  processes_in_job = int(os.environ.get("PROCESSES_IN_JOB"))
-  pid = job_index * processes_in_job + job_completion_index
-  max_logging.log(f" Jax process id is {pid} ")
-  # Explicit initialize is needed only for CPUs
-  jax.distributed.initialize(
-      coordinator_address=coordinator_address,
-      process_id=pid,
-      num_processes=int(os.environ.get("JAX_PROCESS_COUNT")),
-  )
+  if os.environ.get("JAX_COORDINATOR_IP") is not None:
+    """Jax distributed initialize for CPUs. Includes retries until the coordinator is ready."""
+    coordinator_ip_address = str(os.getenv("JAX_COORDINATOR_IP"))
+    coordinator_address = (
+        coordinator_ip_address + ":1234"
+    )  # JAX coordinator port used in XPK
+    # Env variables to be set in XPK or otherwise
+    job_index = int(os.environ.get("NODE_RANK"))
+    #job_completion_index = int(os.environ.get("JOB_COMPLETION_INDEX"))
+    #processes_in_job = int(os.environ.get("PROCESSES_IN_JOB"))
+    pid = job_index# * processes_in_job + job_completion_index
+    max_logging.log(f" Jax process id is {pid} ")
+    # Explicit initialize is needed only for CPUs
+    jax.distributed.initialize(
+        coordinator_address=coordinator_address,
+        process_id=pid,
+        num_processes=int(os.environ.get("NNODES")),
+    )
 
 
 def initialize_jax_for_tpu_with_emergency_checkpointing(raw_keys):

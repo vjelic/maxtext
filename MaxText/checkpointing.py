@@ -27,6 +27,7 @@ from multihost_dataloading import MultiHostDataLoadIterator
 import numpy as np
 import orbax.checkpoint as ocp
 import orbax.checkpoint.experimental.emergency.checkpoint_manager as emergency_checkpoint_manager
+import datetime
 
 CheckpointManager = ocp.CheckpointManager
 CheckpointManagerOptions = ocp.CheckpointManagerOptions
@@ -174,7 +175,7 @@ def load_state_if_possible(
   """
 
   if checkpoint_manager is not None:
-    max_logging.log("checkpoint manager exists so trying to load this run's existing checkpoint")
+    max_logging.log(f"{datetime.datetime.now()}: checkpoint manager exists so trying to load this run's existing checkpoint")
 
     latest_step = checkpoint_manager.latest_step()
     if latest_step is not None:
@@ -254,19 +255,20 @@ def load_state_if_possible(
             ),
             None,
         )
+      max_logging.log(f"{datetime.datetime.now()} done restoring")
 
   if load_parameters_from_path != "":
     restored_params = load_params_from_path(load_parameters_from_path, abstract_unboxed_pre_state.params)
     return None, restored_params
   elif load_full_state_from_path != "":
-    max_logging.log(f"restoring full state from {load_full_state_from_path=}")
+    max_logging.log(f"{datetime.datetime.now()}: restoring full state from {load_full_state_from_path=}")
     p = epath.Path(load_full_state_from_path)
     ckptr = ocp.StandardCheckpointer()
     restored = ckptr.restore(p, abstract_unboxed_pre_state)
     return {"items": restored}, None
 
   else:
-    max_logging.log("No existing checkpoints found, not restoring checkpoint.")
+    max_logging.log(f"{datetime.datetime.now()}: No existing checkpoints found, not restoring checkpoint.")
     return None, None
 
 
@@ -305,7 +307,7 @@ def setup_checkpoint_logger(config) -> composite_logger.CompositeLogger | None:
 def load_params_from_path(load_parameters_from_path, abstract_unboxed_params):
   """Load decode params from checkpoint at specified path."""
   assert load_parameters_from_path, "load_parameters_from_path is not defined."
-  max_logging.log(f"restoring params from {load_parameters_from_path}")
+  max_logging.log(f"{datetime.datetime.now()}: restoring params from {load_parameters_from_path}")
   ckpt = epath.Path(load_parameters_from_path)
   ckptr = ocp.PyTreeCheckpointer()
   # This is a memory optimization. We don't want to restore the entire checkpoint - only the params.
@@ -335,4 +337,4 @@ def save_params_to_path(checkpoint_dir, params):
     save_args=save_args,
     force=True
     )
-  print(f"Quantized params checkpoint saved at: {checkpoint_dir}")
+  max_logging.log(f"{datetime.datetime.now()}: Quantized params checkpoint saved at: {checkpoint_dir}")
