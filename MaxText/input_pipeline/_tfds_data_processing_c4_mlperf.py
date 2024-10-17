@@ -200,14 +200,6 @@ def _pad_to_batch_size(
   return ds.concatenate(pad_ds)
 
 
-def get_eval_global_batch_size_to_load(config: ml_collections.ConfigDict, global_mesh) -> int:
-  """Calculate the global batch size for evaluation."""
-  if config.eval_per_device_batch_size > 0:
-    return config.eval_per_device_batch_size * global_mesh.size
-  else:
-    return config.global_batch_size_to_load
-
-
 def get_dataset(
     dataset_name: str,
     split: str,
@@ -221,11 +213,11 @@ def get_dataset(
   if shard_in_read:
     # shard dataset in reading
     read_config = tfds.ReadConfig(
-      shuffle_seed = data_shuffle_seed,
-      input_context = tf.distribute.InputContext(
-        input_pipeline_id=dataloading_host_index,
-        num_input_pipelines=dataloading_host_count,
-      ),
+        shuffle_seed=data_shuffle_seed,
+        input_context=tf.distribute.InputContext(
+            input_pipeline_id=dataloading_host_index,
+            num_input_pipelines=dataloading_host_count,
+        ),
     )
     ds_builder = tfds.builder(dataset_name)
     ds_builder.download_and_prepare()
@@ -260,7 +252,9 @@ def preprocess_train_dataset(
     data_shuffle_seed: int,
 ) -> tf.data.Dataset:
   """Preprocess the training dataset."""
-  train_ds = train_ds.map(lambda x: tokenizer.TokenizeOp(tokenizer=sp_tokenizer, features=x, data_keys=("targets",)), num_parallel_calls=AUTOTUNE)
+  train_ds = train_ds.map(
+      lambda x: tokenizer.TokenizeOp(tokenizer=sp_tokenizer, features=x, data_keys=("targets",)), num_parallel_calls=AUTOTUNE
+  )
 
   train_ds = reduce_concat_tokens(train_ds, feature_key="targets", batch_size=4096)
   train_ds = split_tokens_to_targets_length(train_ds, max_target_length)
@@ -299,20 +293,20 @@ def preprocess_eval_dataset(
 
 
 def make_c4_mlperf_train_iterator(
-  config: ml_collections.ConfigDict,
-  global_mesh,
-  add_bos,
-  add_eos,
-  process_indices,
+    config: ml_collections.ConfigDict,
+    global_mesh,
+    add_bos,
+    add_eos,
+    process_indices,
 ):
   """Make train iterator of customized C4 dataset for mlperf gpt3 training."""
   train_ds = get_dataset(
-    dataset_name=config.dataset_name,
-    split="train2",
-    dataloading_host_index=process_indices.index(jax.process_index()),
-    dataloading_host_count=len(process_indices),
-    enable_data_shuffling=config.enable_data_shuffling,
-    data_shuffle_seed=config.data_shuffle_seed,
+      dataset_name=config.dataset_name,
+      split="train2",
+      dataloading_host_index=process_indices.index(jax.process_index()),
+      dataloading_host_count=len(process_indices),
+      enable_data_shuffling=config.enable_data_shuffling,
+      data_shuffle_seed=config.data_shuffle_seed,
   )
   train_ds = rekey(train_ds, {"inputs": None, "targets": "text"})
 
@@ -330,26 +324,25 @@ def make_c4_mlperf_train_iterator(
 
 
 def make_c4_mlperf_eval_iterator(
-  config: ml_collections.ConfigDict,
-  global_mesh,
-  process_indices,
+    config: ml_collections.ConfigDict,
+    global_mesh,
+    process_indices,
 ):
   """Make eval iterator of customized C4 dataset for mlperf gpt3 training."""
   eval_ds = get_dataset(
-    dataset_name=config.eval_dataset_name,
-    split="validation_tokenized_5662seqs",
-    dataloading_host_index=process_indices.index(jax.process_index()),
-    dataloading_host_count=len(process_indices),
-    enable_data_shuffling=False,
+      dataset_name=config.eval_dataset_name,
+      split="validation_tokenized_5662seqs",
+      dataloading_host_index=process_indices.index(jax.process_index()),
+      dataloading_host_count=len(process_indices),
+      enable_data_shuffling=False,
   )
   # note validation_tokenized_5662seqs split is pre tokenized, reduce_concated and split to target_length
   #   mainly to avoid eval sequences change depending on the number of hosts
   eval_ds = rekey(eval_ds, {"inputs": None, "targets": "ids"})
-  eval_global_batch_size_to_load = get_eval_global_batch_size_to_load(config, global_mesh)
 
   eval_ds = preprocess_eval_dataset(
       eval_ds,
-      eval_global_batch_size_to_load=eval_global_batch_size_to_load,
+      eval_global_batch_size_to_load=config.global_batch_size_to_load_eval,
       max_target_length=config.max_target_length,
   )
 
