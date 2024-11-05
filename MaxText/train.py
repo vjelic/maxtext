@@ -43,7 +43,7 @@ import max_logging
 import optimizers
 import profiler
 import pyconfig
-import pathwaysutils  # pylint: disable=unused-import
+# import pathwaysutils  # pylint: disable=unused-import
 
 from vertex_tensorboard import VertexTensorboardManager
 # Placeholder: internal
@@ -766,7 +766,7 @@ def main(argv: Sequence[str]) -> None:
   if config.use_vertex_tensorboard or os.environ.get("UPLOAD_DATA_TO_TENSORBOARD"):
     vertex_tensorboard_manager.configure_vertex_tensorboard(config)
 
-  if config.monitor_goodput and jax.process_index() == 0:
+  if config.enable_goodput_recording and jax.process_index() == 0:
     logger_name = f"goodput_{config.run_name}"
     goodput_monitor = monitoring.GoodputMonitor(
         job_name=config.run_name,

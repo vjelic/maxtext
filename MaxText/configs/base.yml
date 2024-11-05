@@ -48,8 +48,8 @@ force_unroll: False # during generate_param_only_checkpoint should we unroll the
 
 # checkpointing using orbax has two important parameters: array driver
 # and its underlying storage - the kvstore (preferably ocdbt)
-# orbax supports setting a target file size, chunking a single 
-# large arrays into small physical files (<2GB) can speed up distributed and over 
+# orbax supports setting a target file size, chunking a single
+# large arrays into small physical files (<2GB) can speed up distributed and over
 # the network loading enormously
 checkpoint_storage_target_data_file_size_bytes: 2147483648
 checkpoint_storage_use_ocdbt: True
@@ -389,7 +389,7 @@ compile_topology: '' # Target hardware version, e.g. 'v5e-256'
 compile_topology_num_slices: -1 # Number of target slices, set to a positive integer.
 
 decode_sampling_strategy: "greedy" # decode_sampling_strategy should be one of greedy, weighted, nucleus, or topk
-decode_sampling_nucleus_p: -1 # set if you're doing nucleus / top-p
+decode_sampling_nucleus_p: -1. # set if you're doing nucleus / top-p
 decode_sampling_top_k: 0 # set if you're doing top-k
 decode_sampling_temperature: 1.
 
@@ -398,8 +398,8 @@ eval_steps: -1  # only run this number of batches for eval, for debugging use
 target_eval_loss: 0.  # early stop once reaching target eval_loss
 
 # Goodput parameters
-enable_goodput_recording: True
-monitor_goodput: True
+enable_goodput_recording: False
+monitor_goodput: False
 goodput_upload_interval_seconds: 60
 
 # Vertex AI Tensorboard Configurations - https://github.com/google/maxtext/tree/main/getting_started/Use_Vertex_AI_Tensorboard.md
