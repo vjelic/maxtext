@@ -254,6 +254,10 @@ def main(config, inference_metadata: Optional[Dict[str, Any]] = None):
   prefill_lengths = [int(l) for l in config.inference_microbenchmark_prefill_lengths.split(",")]
   stages_to_benchmark = config.inference_microbenchmark_stages.split(",")
   benchmark_loop_iters = config.inference_microbenchmark_loop_iters
+  prefill_iters = benchmark_loop_iters
+  if (len(stages_to_benchmark) > 1):
+    prefill_iters = 1
+
 
   text = config.prompt
   metadata = engine.get_tokenizer()
@@ -288,7 +292,7 @@ def main(config, inference_metadata: Optional[Dict[str, Any]] = None):
           prefill_tokens[prefill_length],
           prefill_true_lengths[prefill_length],
           num_model_params,
-          benchmark_loop_iters,
+          prefill_iters,
       )
 
       prefill_insert_time, decode_state = prefill_insert_benchmark(
@@ -299,7 +303,7 @@ def main(config, inference_metadata: Optional[Dict[str, Any]] = None):
           engine.max_concurrent_decodes,
           prefill_tokens[prefill_length],
           prefill_true_lengths[prefill_length],
-          benchmark_loop_iters,
+          prefill_iters,
       )
       benchmark_results["insert"][prefill_length] = {}
       benchmark_results["insert"][prefill_length]["time_in_ms"] = (
