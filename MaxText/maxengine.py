@@ -483,7 +483,7 @@ class MaxEngine(engine_api.Engine):
   @property
   def max_concurrent_decodes(self) -> int:
     """Free slots."""
-    return int(self.config.per_device_batch_size * jax.device_count())
+    return int(self.config.per_device_batch_size * jax.device_count() / self.config.dcn_tensor_parallelism )# TODO: take into account ici tensor parallelism
 
   @property
   def max_prefill_length(self) -> int:
