@@ -137,6 +137,8 @@ def ar_benchmark_loop(config, engine, params, decode_state, iters, profile_name)
 def ar_benchmark(config, engine, params, decode_state, global_batch_size, cache_size, model_size, iters):
   """Handles warmup, running ar benchmark, and printing results."""
   rng = jax.random.PRNGKey(1234)
+  # this is not right with warmup_iters > 0 because we generate more tokens than specified,
+  # growing the cache. However warmup iters is set to 2, so this is a small difference
   for _ in range(_WARMUP_ITERS):
     rng, rng_generate = jax.random.split(rng)
     decode_state, _ = engine.generate(params, decode_state, rng=rng_generate)
@@ -151,6 +153,7 @@ def ar_benchmark(config, engine, params, decode_state, global_batch_size, cache_
   bw_per_device = GB_per_step_per_device / seconds_per_step
   print(
       f"AutoRegressive results:\n"
+      f"\tAR total time in seconds: {time_in_s}\n"
       f"\tAR step average time: {ar_average_ms:.3f} ms\n"
       f"\tAR step average time per seq: {ar_average_ms/global_batch_size:.3f} ms\n"
       f"\tAR global batch size: {global_batch_size}\n"

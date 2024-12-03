@@ -430,7 +430,7 @@ class MaxEngine(engine_api.Engine):
     # pylint: disable=unused-argument
     def init(abstract_params):
       x = jnp.ones(
-          (int(self.config.per_device_batch_size * jax.device_count()), self.config.max_prefill_predict_length),
+          (self.max_concurrent_decodes, self.config.max_prefill_predict_length),
           dtype=jnp.int32,
       )
       _, cache = self.model.apply(
@@ -444,11 +444,11 @@ class MaxEngine(engine_api.Engine):
           mutable=["cache"],
       )
 
-      next_pos = jnp.zeros((int(self.config.per_device_batch_size * jax.device_count()), 1), dtype=jnp.int32)
-      generated_tokens = jnp.zeros((int(self.config.per_device_batch_size * jax.device_count()), 1), dtype=jnp.int32)
-      tokens = jnp.zeros((int(self.config.per_device_batch_size * jax.device_count()), 1), dtype=jnp.int32)
+      next_pos = jnp.zeros((self.max_concurrent_decodes, 1), dtype=jnp.int32)
+      generated_tokens = jnp.zeros((self.max_concurrent_decodes, 1), dtype=jnp.int32)
+      tokens = jnp.zeros((self.max_concurrent_decodes, 1), dtype=jnp.int32)
       return {
-          "logits": jnp.zeros((int(self.config.per_device_batch_size * jax.device_count()), 1, self.config.vocab_size)),
+          "logits": jnp.zeros((self.max_concurrent_decodes, 1, self.config.vocab_size)),
           "cache": cache["cache"],
           "next_pos": next_pos,
           "generated_tokens": generated_tokens,
@@ -483,7 +483,7 @@ class MaxEngine(engine_api.Engine):
   @property
   def max_concurrent_decodes(self) -> int:
     """Free slots."""
-    return int(self.config.per_device_batch_size * jax.device_count() / self.config.dcn_tensor_parallelism )# TODO: take into account ici tensor parallelism
+    return int(self.config.per_device_batch_size * jax.device_count() / (self.config.dcn_tensor_parallelism * self.config.ici_tensor_parallelism))
 
   @property
   def max_prefill_length(self) -> int:
