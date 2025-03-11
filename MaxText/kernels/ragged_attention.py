@@ -225,7 +225,7 @@ def ragged_mqa(
     *,
     block_size: int = 256,
     mask_value: float = DEFAULT_MASK_VALUE,
-    cost_estimate: pl.CostEstimate | None = None,
+    cost_estimate: None= None, #pl.CostEstimate | None = None,
 ) -> tuple[jax.Array, jax.Array, jax.Array]:
   """Ragged multi query attention.
 
