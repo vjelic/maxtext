@@ -1,7 +1,9 @@
 #!/bin/bash
 
 set -x
+# Create output dir
 OUTPUT_DIR="$HOME/output"
+mkdir -p $OUTPUT_DIR
 
 # Environment variables
 echo 'export XLA_FLAGS="--xla_gpu_enable_cublaslt=True --xla_gpu_graph_level=0 --xla_gpu_autotune_level=0 --xla_gpu_enable_latency_hiding_scheduler=TRUE --xla_gpu_all_gather_combine_threshold_bytes=8589934592 --xla_gpu_enable_all_gather_combine_by_dim=FALSE --xla_gpu_memory_limit_slop_factor=95"
