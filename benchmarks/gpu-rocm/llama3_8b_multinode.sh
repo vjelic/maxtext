@@ -155,6 +155,6 @@ srun --nodes=$SLURM_JOB_NUM_NODES --ntasks=$SLURM_JOB_NUM_NODES \
 	cp '${OUTPUT_DIR}'/llama3_8b_gpu.yml MaxText/configs/llama3_8b_gpu.yml
 	source install_packages.sh
         source maxtext_env_8b.sh	
-        python MaxText/train.py MaxText/configs/llama3_8b_gpu.yml  2>&1 |& tee -a llama3_8b.real.log
+        python MaxText/train.py MaxText/configs/llama3_8b_gpu.yml base_output_directory=output 2>&1 |& tee -a llama3_8b.real.log
     "'
 

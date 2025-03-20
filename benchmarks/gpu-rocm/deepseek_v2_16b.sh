@@ -70,5 +70,5 @@ $docker run --rm --privileged --network host --device /dev/dri --device /dev/kfd
     cp $OUTPUT_DIR/deepseek2_env_16b.sh .
     cp $OUTPUT_DIR/deepseek2_16b_gpu.yml MaxText/configs/.
     source deepseek2_env_16b.sh
-    python /workspace/maxtext/MaxText/train.py MaxText/configs/deepseek2_16b_gpu.yml  2>&1 |& tee -a  deepseek_v2_16b.log
+    python /workspace/maxtext/MaxText/train.py MaxText/configs/deepseek2_16b_gpu.yml base_output_directory=output 2>&1 |& tee -a  deepseek_v2_16b.log
    "

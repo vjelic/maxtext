@@ -71,6 +71,6 @@ $docker run --rm --privileged --network host --device /dev/dri --device /dev/kfd
 	cp $OUTPUT_DIR/maxtext_env_8b.sh .
 	cp $OUTPUT_DIR/llama3_8b_gpu.yml MaxText/configs/llama3_8b_gpu.yml
         source maxtext_env_8b.sh	
-        python MaxText/train.py MaxText/configs/llama3_8b_gpu.yml  2>&1 |& tee -a llama3_8b.real.log
+        python MaxText/train.py MaxText/configs/llama3_8b_gpu.yml base_output_directory=output 2>&1 |& tee -a llama3_8b.real.log
     "
 
