@@ -44,7 +44,7 @@ per_device_batch_size: 10
 hf_path: "parquet" 
 hf_train_files: "/home/amd/data/c4/en/partial-train/000*.parquet"
 dataset_type: "hf"
-tokenizer_path: "/home/amd/data/Llama-2-7b-hf/"' > $OUTPUT_DIR/llama2_7b_gpu.yml
+tokenizer_path: "meta-llama/Llama-2-7b"' > $OUTPUT_DIR/llama2_7b_gpu.yml
 
 #If podman is available instead of docker, then you need this export otherwise
 #comment the below line and uncomment the line after that
@@ -54,15 +54,13 @@ docker=docker
 
 
 # get the test data
-pip install -U "huggingface_hub[cli]" > /dev/null
-export PATH=~/.local/bin/:$PATH
-huggingface-cli download meta-llama/Llama-2-7b-chat-hf --local-dir $HOME/data/Llama-2-7b-hf/ --cache-dir $HOME/data > /dev/null
-huggingface-cli download legacy-datasets/c4 --include "*.parquet" --repo-type dataset --local-dir $HOME/data/c4 --revision refs/convert/parquet --cache-dir $HOME/data > /dev/null
-
+echo "For downloading data, we will mount \$HF_HOME to the docker and try to get llama tokenizer directly from there"
+echo "Please set \$HF_HOME when calling this script, your HF_HOME is set as"
+echo $HF_HOME
 
 $docker run --rm --privileged --network host --device /dev/dri --device /dev/kfd \
   --cap-add=IPC_LOCK --volume /dev/infiniband:/dev/infiniband \
-  -v $HOME:$HOME -v $HOME/data:/home/amd/data --tmpfs /dev/shm:size=50G \
+  -v $HOME:$HOME -v $HOME/data:/home/amd/data -v $HF_HOME:/hf_cache -e HF_HOME=/hf_cache--tmpfs /dev/shm:size=50G \
   --mount type=bind,source=$OUTPUT_DIR,target=/workspace/maxtext/output \
   -w /workspace/maxtext $IMAGE /bin/bash -c "
         set -e

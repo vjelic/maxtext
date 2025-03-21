@@ -8,3 +8,5 @@ For the multinode scripts, they were written and tested on AMD internal cluster,
 ```
 sbatch -N <num_nodes> llama3_70b_multinode.sh
 ```
+## dataset
+For single node tests, the script has been updated to use the $HF_HOME folder on the host. The script will mount the host HF folder to the docker and run for there. Please make sure that the data already got downloaded before running the script.
