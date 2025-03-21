@@ -60,7 +60,7 @@ echo $HF_HOME
 
 $docker run --rm --privileged --network host --device /dev/dri --device /dev/kfd \
   --cap-add=IPC_LOCK --volume /dev/infiniband:/dev/infiniband \
-  -v $HOME:$HOME -v $HOME/data:/home/amd/data -v $HF_HOME:/hf_cache -e HF_HOME=/hf_cache--tmpfs /dev/shm:size=50G \
+  -v $HOME:$HOME -v $HOME/data:/home/amd/data -v $HF_HOME:/hf_cache -e HF_HOME=/hf_cache --tmpfs /dev/shm:size=50G \
   --mount type=bind,source=$OUTPUT_DIR,target=/workspace/maxtext/output \
   -w /workspace/maxtext $IMAGE /bin/bash -c "
         set -e
