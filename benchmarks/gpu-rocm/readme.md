@@ -9,5 +9,5 @@ For the multinode one, they were written for AMD internal cluster, and will need
 ```
 sbatch -N <num_nodes> llama3_70b_multinode.sh
 ```
-## Dataset
+## Dataset/Tokenizer download
 For single node scripts, they will use the $HF_HOME folder on the host. The script will mount the host HF folder to the docker. Please make sure that the data already got downloaded to $HF_HOME folder before running the script.
