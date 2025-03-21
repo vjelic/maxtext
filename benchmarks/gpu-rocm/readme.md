@@ -3,8 +3,10 @@ Scripts under this folder are used to benchmark rocm docker for maxtext-jax with
 
 All the scripts without the _multinode suffix can be launched on single node like:
 ```
-IMAGE="rocm/jax-maxtext-training:xxx" bash ./deepseek_v2_16b.sh
+IMAGE="rocm/jax-maxtext-training:xxx" HF_HOME=/home/amd-shared-home/.cache/huggingface bash ./deepseek_v2_16b.sh
 ```
+Please adjust the $HF_HOME and $IMAGE to your environment.
+
 For the multinode one, they were written for AMD internal cluster, and will need to be adjusted for other cluster setting. They can be launched via slurm like:
 ```
 sbatch -N <num_nodes> llama3_70b_multinode.sh
