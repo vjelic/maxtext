@@ -14,4 +14,11 @@ For the multinode one, they were written for AMD internal cluster, and will need
 sbatch -N <num_nodes> llama3_70b_multinode.sh
 ```
 ## Dataset/Tokenizer download
-For single node scripts, they will use the $HF_HOME folder on the host. The script will mount the host HF folder to the docker. Please make sure that the data already got downloaded to $HF_HOME folder before running the script.
+For single node scripts, they will use the $HF_HOME folder on the host. The script will mount the host HF folder to the docker. Please make sure that the data already got downloaded to $HF_HOME folder before running the script. The tokenizer of corresponding models will be used for the training
+
+|  Model tag | Huggingface webpage  |
+|---|---|
+| meta-llama/Llama-2-7b  |  https://huggingface.co/meta-llama/Llama-2-7b |
+| meta-llama/Llama-2-70b  | https://huggingface.co/meta-llama/Llama-2-70b  |
+| meta-llama/Meta-Llama-3-8B  | https://huggingface.co/meta-llama/Meta-Llama-3-8B  |
+| meta-llama/Meta-Llama-3-70B  |  https://huggingface.co/meta-llama/Meta-Llama-3-70B |
