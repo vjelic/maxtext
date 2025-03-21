@@ -5,7 +5,9 @@ All the scripts without the _multinode suffix can be launched on single node lik
 ```
 IMAGE="rocm/jax-maxtext-training:xxx" HF_HOME=/home/amd-shared-home/.cache/huggingface bash ./deepseek_v2_16b.sh
 ```
-Please adjust the $HF_HOME and $IMAGE to your environment.
+Please adjust the $HF_HOME and $IMAGE to your environment. 
+
+HF_HOME is where huggingface_hub will store local data, please refer to [Huggingface cli Document](https://huggingface.co/docs/huggingface_hub/main/en/guides/cli#huggingface-cli-download) on how to download the data.
 
 For the multinode one, they were written for AMD internal cluster, and will need to be adjusted for other cluster setting. They can be launched via slurm like:
 ```
