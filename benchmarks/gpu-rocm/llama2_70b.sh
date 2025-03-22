@@ -52,7 +52,7 @@ checkpoint_is_quantized: False # Set to True if reading from a saved aqt quantiz
 per_device_batch_size: 14
 max_target_length: 4096
 hf_path: "parquet" 
-hf_train_files: "/home/amd/data/c4/en/partial-train/000*.parquet"
+hf_train_files: "/hf_cache/hub/datasets--legacy-datasets--c4/snapshots/5abe0d085aa23dd9db2a6c1e86cfce4e4db6f0c3/en/partial-train/000*.parquet"
 dataset_type: "hf"
 tokenizer_path: "meta-llama/Llama-2-70b"' > $OUTPUT_DIR/llama2_70b_gpu.yml
 
@@ -67,6 +67,7 @@ docker=docker
 echo "For downloading data, we will mount \$HF_HOME to the docker and try to get llama tokenizer directly from there"
 echo "Please set \$HF_HOME when calling this script, your HF_HOME is set as"
 echo $HF_HOME
+huggingface-cli download legacy-datasets/c4 --include "*.parquet" --repo-type dataset  --revision refs/convert/parquet
 
 
 $docker run --rm --privileged --network host --device /dev/dri --device /dev/kfd \

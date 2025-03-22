@@ -13,8 +13,8 @@ For the multinode one, they were written for AMD internal cluster, and will need
 ```
 sbatch -N <num_nodes> llama3_70b_multinode.sh
 ```
-## Dataset/Tokenizer download
-For single node scripts, they will use the $HF_HOME folder on the host. The script will mount the host HF folder to the docker. Please make sure that the data already got downloaded to $HF_HOME folder before running the script. The tokenizer of corresponding models will be used for the training
+## Tokenizer download
+For single node scripts, they will use the $HF_HOME folder on the host. The script will mount the host HF folder to the docker. Please make sure that the data already got downloaded to $HF_HOME folder before running the script. The tokenizer of corresponding models will be used for the training.
 
 |  Model tag | Huggingface webpage  |
 |---|---|
@@ -22,3 +22,10 @@ For single node scripts, they will use the $HF_HOME folder on the host. The scri
 | meta-llama/Llama-2-70b  | https://huggingface.co/meta-llama/Llama-2-70b  |
 | meta-llama/Meta-Llama-3-8B  | https://huggingface.co/meta-llama/Meta-Llama-3-8B  |
 | meta-llama/Meta-Llama-3-70B  |  https://huggingface.co/meta-llama/Meta-Llama-3-70B |
+
+## Dataset download
+Please run this command for downloading the c4 dataset
+```
+huggingface-cli download legacy-datasets/c4 --include "*.parquet" --repo-type dataset  --revision refs/convert/parquet
+```
+Please check this path and see if data got downloaded to $HF_HOME/hub/datasets--legacy-datasets--c4/snapshots/5abe0d085aa23dd9db2a6c1e86cfce4e4db6f0c3/en/partial-train/000*.parquet
