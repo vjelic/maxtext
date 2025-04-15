@@ -54,7 +54,7 @@ max_target_length: 8192
 hf_path: "parquet" 
 hf_train_files: "/hf_cache/hub/datasets--legacy-datasets--c4/snapshots/5abe0d085aa23dd9db2a6c1e86cfce4e4db6f0c3/en/partial-train/000*.parquet"
 dataset_type: "hf"
-tokenizer_path: "meta-llama/Meta-Llama-3-70B"' > $OUTPUT_DIR/llama3.3_70b_gpu.yml
+tokenizer_path: "meta-llama/Llama-3.3-70B-Instruct"' > $OUTPUT_DIR/llama3.3_70b_gpu.yml
 
 #If podman is available instead of docker, then you need this export otherwise
 #comment the below line and uncomment the line after that
