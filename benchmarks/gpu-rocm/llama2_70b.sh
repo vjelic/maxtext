@@ -49,7 +49,7 @@ kv_quant_axis: "heads_and_dkv"
 kv_quant_dtype: "int8"
 weight_dtype: bfloat16
 checkpoint_is_quantized: False # Set to True if reading from a saved aqt quantized checkpoint
-per_device_batch_size: 14
+per_device_batch_size: 15
 max_target_length: 4096
 hf_path: "parquet" 
 hf_train_files: "/hf_cache/hub/datasets--legacy-datasets--c4/snapshots/5abe0d085aa23dd9db2a6c1e86cfce4e4db6f0c3/en/partial-train/000*.parquet"
