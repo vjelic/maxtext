@@ -1,0 +1,20 @@
+base_config: "base.yml"
+
+run_name: "gpu_train_test"
+hardware: "gpu"
+steps: 10
+per_device_batch_size: 4
+max_target_length: 1028
+model_name: "llama2-7b"
+enable_checkpointing: False
+attention: "dot_product"
+remat_policy: "minimal_flash"
+use_iota_embed: True
+scan_layers: False
+dataset_type: "synthetic"
+async_checkpointing: False
+dtype: "bfloat16"
+weight_dtype: "bfloat16"
+enable_goodput_recording: False
+monitor_goodput: False
+base_num_decoder_layers: 2
