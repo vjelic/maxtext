@@ -12,7 +12,7 @@ google-cloud-monitoring
 google-api-core
 google-api-python-client
 grain[parquet]>=0.2.6
-flax>=0.8.0
+flax==0.10.4
 jaxtyping
 ml-collections
 ml-goodput-measurement==0.0.8
@@ -34,7 +34,7 @@ tensorboard-plugin-profile
 tiktoken
 transformers
 mlperf-logging@git+https://github.com/mlperf/logging.git
-google-jetstream@git+https://github.com/AI-Hypercomputer/JetStream.git
+google-jetstream==0.2.2
 jsonlines
 pathwaysutils@git+https://github.com/AI-Hypercomputer/pathways-utils.git
 omegaconf
