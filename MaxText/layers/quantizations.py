@@ -284,6 +284,8 @@ class NANOOFp8Quantization(Quantization):
   def dot_general_cls(self, mesh_axes: Tuple[str, ...] = ()):
     """Returns dot_general configured with aqt params."""
     return nn.NANOOFp8DotGeneralOp
+  def einsum(self, dtype: DType = jnp.float32):
+    return Fp8Einsum(dtype=dtype,e4m3_dtype=jnp.float8_e4m3fnuz,e5m2_dtype=jnp.float8_e5m2fnuz)
 
 
 def _get_int8_quant_config(config):
