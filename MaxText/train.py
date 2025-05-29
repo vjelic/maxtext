@@ -14,77 +14,78 @@ See the License for the specific language governing permissions and
 limitations under the License.
 """
 
-# pylint: disable=g-bad-todo, abstract-method, consider-using-with, ungrouped-imports
+# pylint: disable=g-bad-todo, abstract-method, consider-using-with
 """Training loop and Decoding of the model."""
 
 # Calling jax.device_count here prevents a "TPU platform already registered" error.
 # See github.com/google/maxtext/issues/20 for more
 
-import datetime
-import os
-import sys
-import functools
-import time
-import queue
-
 from typing import Sequence
+import datetime
+import functools
+import os
+import queue
+import sys
+import time
+
 from absl import app
+
+import numpy as np
+
+import pathwaysutils  # pylint: disable=unused-import
+
+import tensorflow as tf
+
+from jax import random
+from jax.experimental import checkify
+from jax.sharding import Mesh
+import jax
+import jax.numpy as jnp
+
 from flax import linen as nn
 from flax.linen import partitioning as nn_partitioning
-import grain.python as grain
-import jax
-import numpy as np
+
 import orbax.checkpoint
 import orbax.checkpoint.experimental.emergency.checkpoint_manager as emergency_checkpoint_manager
 # import orbax.checkpoint.experimental.emergency.replicator_checkpoint_manager as emergency_replicator_checkpoint_manager
 
-import checkpointing
-import max_utils
-import maxtext_utils
-import max_logging
-import optimizers
-import profiler
-import pyconfig
-import pathwaysutils  # pylint: disable=unused-import
-import tensorflow as tf
-
-from metric_logger import MetricLogger
-
-from vertex_tensorboard import VertexTensorboardManager
-# Placeholder: internal
-
-from input_pipeline.input_pipeline_interface import create_data_iterator
-from layers import models
-
-from gcp_workload_monitor import GCPWorkloadMonitor
-
-import jax.numpy as jnp
-from jax import random
-from jax.sharding import Mesh
-from jax.experimental import checkify
+import grain.python as grain
 
 from cloud_tpu_diagnostics import diagnostic
 from cloud_tpu_diagnostics.configuration import debug_configuration
 from cloud_tpu_diagnostics.configuration import diagnostic_configuration
 from cloud_tpu_diagnostics.configuration import stack_trace_configuration
 
-from layers import quantizations
-
 from ml_goodput_measurement import goodput
 from ml_goodput_measurement import monitoring
 
+from MaxText import checkpointing
+from MaxText import max_logging
+from MaxText import max_utils
+from MaxText import maxtext_utils
+from MaxText import optimizers
+from MaxText import profiler
+from MaxText import pyconfig
+from MaxText.gcp_workload_monitor import GCPWorkloadMonitor
+from MaxText.input_pipeline.input_pipeline_interface import create_data_iterator
+from MaxText.layers import quantizations
+from MaxText.layers.models import Transformer
+from MaxText.metric_logger import MetricLogger
+from MaxText.utils import gcs_utils
+from MaxText.vertex_tensorboard import VertexTensorboardManager
+# Placeholder: internal
+
 # pylint: disable=too-many-positional-arguments
 
-Transformer = models.Transformer
 EPS = 1e-8
 _DEFAULT_OCDBT_TARGET_DATA_FILE_SIZE = 2 * 1024**3
 
 
 def validate_train_config(config):
-  """Validates the configuration is set correctly for train.py"""
+  """Validates the configuration is set correctly for 'train.py'."""
 
   assert config.run_name, "Erroring out, need a real run_name"
-  if not config.dataset_path.startswith("gs://"):
+  if config.dataset_path and not config.dataset_path.startswith("gs://"):
     max_logging.log("WARNING: 'dataset_path' might be pointing your local file system")
   if not config.base_output_directory.startswith("gs://"):
     max_logging.log("WARNING: 'base_output_directory' might be pointing your local file system")
@@ -92,14 +93,23 @@ def validate_train_config(config):
 
   if config.quantization in ("fp8", "nanoo_fp8"):
     # pylint: disable=line-too-long
-    assert (
-        config.gradient_accumulation_steps == 1
-    ), "fp8 can't be used with gradient_accumulation_steps right now. Please use other quantization or set gradient_accumulation_steps to 1"
+    assert config.gradient_accumulation_steps == 1, (
+        "fp8 can't be used with gradient_accumulation_steps right now. Please use other quantization or set "
+        "gradient_accumulation_steps to 1"
+    )
+
+  # Check if GPU Flash Attention is being used with sequence packing
+  if config.attention == "cudnn_flash_te" and config.packing and config.dataset_type != "synthetic":
+    raise ValueError(
+        "cudnn_flash_te only supports BSHD format. The THD (seq packing) support is going to be available in "
+        "Transformer Engine 2.0 release. "
+        "Please disable sequence packing (set packing=False) or use a different attention mechanism. "
+        "With synthetic data, the format is not important as packing is not applied."
+    )
 
 
 def get_first_step(state):
-  with jax.spmd_mode("allow_all"):
-    return int(state.step)
+  return int(state.step)
 
 
 def load_next_batch(train_iter, example_batch, config):
@@ -125,14 +135,17 @@ def save_checkpoint(
     checkpoint_manager,
     step,
     state,
-    dataset_type="c4",
+    dataset_type="tfds",
     data_iterator=None,
     config=None,
+    force=False,
 ) -> bool:
   """Wrapper for saving checkpoint."""
   if config and config.enable_checkpointing:
-    if (step % config.checkpoint_period == 0) or (
-        config.enable_emergency_checkpoint and step % config.local_checkpoint_period == 0
+    if (
+        force
+        or (step % config.checkpoint_period == 0)
+        or (config.enable_emergency_checkpoint and step % config.local_checkpoint_period == 0)
     ):
       blocking_until_ready_start = time.time()
       max_logging.log(f"Waiting for step {step} to finish before checkpoint...")
@@ -157,9 +170,17 @@ def save_checkpoint(
           emergency_replicator_checkpoint_manager.ReplicatorCheckpointManager,
       ),
   ):
+    checkpointing.replicator_error_handler(config)
     return checkpoint_manager.save(
         step,
-        args=orbax.checkpoint.args.PyTreeSave(item=state, save_args=save_args, ocdbt_target_data_file_size=chunk_byte_size),
+        args=orbax.checkpoint.args.Composite(
+            state=orbax.checkpoint.args.PyTreeSave(
+                item=state,
+                save_args=save_args,
+                ocdbt_target_data_file_size=chunk_byte_size,
+            )
+        ),
+        force=force,
     )
 
   if dataset_type == "grain":
@@ -171,6 +192,7 @@ def save_checkpoint(
             ),
             iter=grain.PyGrainCheckpointSave(data_iterator.local_iterator),
         ),
+        force=force,
     )
   else:
     return checkpoint_manager.save(
@@ -180,6 +202,7 @@ def save_checkpoint(
                 item=state, save_args=save_args, ocdbt_target_data_file_size=chunk_byte_size
             )
         ),
+        force=force,
     )
 
 
@@ -278,7 +301,8 @@ def dpo_loss_fn(model, config, data, dropout_rng, params, reference_params, is_t
   rejected_segmentation = data["rejected_segmentation"][..., 1:]
   n_logits = logits.shape[-3] // 2  # [B, S, E] - [batch, sequence, embedding/vocab]
   chosen_logits, rejected_logits = logits[:n_logits, :, :], logits[n_logits:, :, :]  # [B, S, E], [B, S, E]
-  chosen_ref_logits, rejected_ref_logits = ref_logits[:n_logits, :, :], ref_logits[n_logits:, :, :]  # [B, S, E], [B, S, E]
+  # ^ [B, S, E], [B, S, E]
+  chosen_ref_logits, rejected_ref_logits = ref_logits[:n_logits, :, :], ref_logits[n_logits:, :, :]
 
   # common subsequence and padding mask
   common_prefix_mask = jnp.cumsum(chosen_ids != rejected_ids, axis=-1) == 0  # [B, S]
@@ -363,6 +387,7 @@ def loss_fn(model, config, data, dropout_rng, params, is_train=True):
       data["inputs"],
       data["inputs_position"],
       decoder_segment_ids=data["inputs_segmentation"],
+      encoder_images=data["images"] if config.use_multimodal else None,
       enable_dropout=config.enable_dropout if is_train else False,
       rngs={"dropout": rng1, "params": aqt_rng},
       mutable="intermediates",
@@ -446,11 +471,9 @@ def train_step(model, config, state_mesh_shardings, state, data, dropout_rng):
         + grad_and_loss["moe_lb_loss"] / config.gradient_accumulation_steps
     )
     raw_grads = jax.tree_util.tree_map(lambda arr: arr / grad_and_loss["total_weights"], grad_and_loss["grad"])
-    aux = jax.tree_map(lambda x: jnp.sum(x, axis=0), aux)
+    aux = jax.tree.map(lambda x: jnp.sum(x, axis=0), aux)  # pytype: disable=module-attr
   else:
     if config.optimizer_memory_host_offload:
-      cast_params = jax.device_put(state.params, max_utils.with_memory_kind(state_mesh_shardings.params, "device"))
-      state = state.replace(params=cast_params)
       if config.use_dpo:
         reference_params = jax.device_put(reference_params, max_utils.with_memory_kind(reference_params_sharding, "device"))
         extra_dpo_args = [reference_params]
@@ -469,6 +492,20 @@ def train_step(model, config, state_mesh_shardings, state, data, dropout_rng):
         opt_state=jax.device_put(
             state.opt_state,
             jax.tree_util.tree_map(lambda x: x.with_memory_kind(kind="device"), state_mesh_shardings.opt_state),
+        )
+    )
+  # Move all parameters to device before optimizer update
+  if config.parameter_memory_host_offload:
+    max_logging.log("\nMoving all parameters to device before optimizer update")
+
+    def move(path, value):
+      max_logging.log(f"train.py: Moving f{path} to device")
+      return value.with_memory_kind(kind="device")
+
+    state = state.replace(
+        params=jax.device_put(
+            state.params,
+            jax.tree_util.tree_map_with_path(move, state_mesh_shardings.params),
         )
     )
   new_state = state.apply_gradients(grads=grads)
@@ -554,11 +591,12 @@ def check_example_batch(config, example_batch):
     err.throw()
 
 
-def setup_mesh_and_model(config):
+def setup_mesh_and_model(config, devices=None):
   """Set up the mesh and the model for training
 
   Args:
     config
+    devices
 
   Returns:
     init_rng: RNG key
@@ -572,16 +610,16 @@ def setup_mesh_and_model(config):
   """
 
   init_rng = random.PRNGKey(config.init_weights_seed)
-  writer = max_utils.initialize_summary_writer(config)
+  writer = max_utils.initialize_summary_writer(config.tensorboard_dir, config.run_name)
 
   # Mesh definition
-  devices_array = max_utils.create_device_mesh(config)
+  devices_array = maxtext_utils.create_device_mesh(config, devices)
   mesh = Mesh(devices_array, config.mesh_axes)
 
   # Model and Optimizer definition
   quant = quantizations.configure_quantization(config)
   model = Transformer(config, mesh, quant=quant)
-  learning_rate_schedule = max_utils.create_learning_rate_schedule(config)
+  learning_rate_schedule = maxtext_utils.create_learning_rate_schedule(config)
   tx = optimizers.get_optimizer(config, learning_rate_schedule)
   logger = checkpointing.setup_checkpoint_logger(config)
   if config.enable_emergency_checkpoint:
@@ -592,7 +630,7 @@ def setup_mesh_and_model(config):
           mesh,
       )
     else:
-      abstract_state, _, _ = max_utils.get_abstract_state(model, tx, config, init_rng, mesh, is_training=True)
+      abstract_state, _, _ = maxtext_utils.get_abstract_state(model, tx, config, init_rng, mesh, is_training=True)
       checkpoint_manager = checkpointing.create_orbax_emergency_checkpoint_manager(
           config.local_checkpoint_directory,
           config.checkpoint_dir,
@@ -648,7 +686,23 @@ def setup_train_loop(config):
   record_goodput(recorder, config, recorder.record_training_preparation_start_time if recorder else None)
   data_iterator, eval_data_iterator = create_data_iterator(config, mesh)
 
-  state, _, state_mesh_shardings, data_iterator = max_utils.setup_training_state(
+  context_parallel_size = mesh.shape["context"]
+  # Check if context parallelism is being used with sequence packing
+  if context_parallel_size > 1 and config.packing and config.dataset_type != "synthetic":
+    raise ValueError(
+        "Context parallelism cannot be used with sequence packing except for synthetic data where packing is not applied. "
+        "Either disable sequence packing (set packing=False) or disable context parallelism. "
+        "Context parallelism with packing support will be added soon."
+    )
+
+  # Apply reordering wrapper to data iterators if context parallelism is enabled
+  with mesh:
+    if context_parallel_size > 1 and config.context_parallel_load_balance:
+      data_iterator = map(max_utils.get_reorder_callable(context_parallel_size), data_iterator)
+      if eval_data_iterator:
+        eval_data_iterator = map(max_utils.get_reorder_callable(context_parallel_size), eval_data_iterator)
+
+  state, _, state_mesh_shardings, data_iterator = maxtext_utils.setup_training_state(
       model, data_iterator, tx, config, init_rng, mesh, checkpoint_manager
   )
 
@@ -657,7 +711,7 @@ def setup_train_loop(config):
     maxtext_utils.assert_params_sufficiently_sharded(state.params, mesh, config.sharding_tolerance)
 
   if config.use_dpo:
-    abstract_state, _, _ = max_utils.get_abstract_state(model, tx, config, init_rng, mesh, is_training=True)
+    abstract_state, _, _ = maxtext_utils.get_abstract_state(model, tx, config, init_rng, mesh, is_training=True)
     max_logging.log(f"Restoring reference parameters for DPO from '{os.path.join(str(config.checkpoint_dir), str(0))}'")
     try:
       step0_restored, _ = checkpointing.load_state_if_possible(
@@ -670,6 +724,8 @@ def setup_train_loop(config):
           enable_single_replica_ckpt_restoring=False,
           dataset_type=config.dataset_type,
           step=0,
+          use_ocdbt=config.checkpoint_storage_use_ocdbt,
+          use_zarr3=config.checkpoint_storage_use_zarr3,
       )
     except FileNotFoundError:
       step0_restored = None
@@ -754,7 +810,7 @@ def train_loop(config, state=None):
   # Write train config params, num model params, and XLA flags to tensorboard
   max_utils.add_text_to_summary_writer("num_model_parameters", str(num_model_parameters), writer)
   max_utils.add_text_to_summary_writer("libtpu_init_args", os.environ["LIBTPU_INIT_ARGS"], writer)
-  max_utils.add_config_to_summary_writer(config, writer)
+  maxtext_utils.add_config_to_summary_writer(config, writer)
 
   # Define the compilation of functional_train, either by loading the compiled version or wrapping a new one in a jit
   if config.compiled_trainstep_file != "":
@@ -806,6 +862,7 @@ def train_loop(config, state=None):
       gcp_workload_monitor.start_performance_reporting_thread(performance_metric_queue)
 
   metric_logger = MetricLogger(writer, config)
+  input_data_shardings = maxtext_utils.get_input_data_sharding(config, mesh)
   for step in np.arange(start_step, config.steps):
     if step == first_profiling_step or prof.should_activate_periodic_profile(step):
       optional_postfix = f"step_{step}" if config.profile_periodically_period > 0 else ""
@@ -813,7 +870,13 @@ def train_loop(config, state=None):
 
     with jax.profiler.StepTraceAnnotation("train", step_num=step):
       record_goodput(recorder, config, recorder.record_data_loading_start_time if recorder else None)
-      example_batch = load_next_batch(data_iterator, example_batch, config)
+      try:
+        example_batch = load_next_batch(data_iterator, example_batch, config)
+        # Reshard data from loaded sharding to performant activation sharding
+        example_batch = jax.lax.with_sharding_constraint(example_batch, input_data_shardings)
+      except Exception as e:  # pylint: disable=broad-except
+        max_logging.log(f"load_next_batch failed, you may have run out of data. Error message: {e}")
+        break
       record_goodput(recorder, config, recorder.record_data_loading_end_time if recorder else None)
       check_example_batch(config, example_batch=example_batch)
       # pylint: disable=not-callable
@@ -842,9 +905,9 @@ def train_loop(config, state=None):
 
     metric_logger.write_metrics(running_gcs_metrics, metrics, step)
 
-    if config.dump_hlo and step == start_step:
+    if config.dump_hlo and step == (config.dump_step if config.dump_step >= 0 else start_step):
       jax.block_until_ready(state)  # Ensure compilation has finished.
-      max_utils.upload_dump(
+      gcs_utils.upload_dump(
           config.dump_hlo_local_dir,
           config.dump_hlo_gcs_dir,
           module_name=config.dump_hlo_module_name,
@@ -902,6 +965,22 @@ def train_loop(config, state=None):
       max_utils.print_mem_stats("After params initialized")
 
   if checkpoint_manager is not None:
+    if (int(state.step) - 1) % config.checkpoint_period != 0:
+      try:
+        state_to_save = state if not config.use_dpo else _split_dpo_state(state)[0]
+        if save_checkpoint(
+            checkpoint_manager,
+            int(state.step) - 1,
+            state_to_save,
+            config.dataset_type,
+            data_iterator,
+            config,
+            force=True,
+        ):
+          checkpointing.print_save_message(int(state.step) - 1, config.async_checkpointing)
+      except Exception:  # pylint: disable=broad-except
+        max_logging.log(f"Checkpoint is already saved for step {int(state.step)-1}.")
+
     checkpoint_manager.wait_until_finished()
   metric_logger.write_metrics(running_gcs_metrics, metrics, config.steps - 1)  # final step metrics
   max_utils.close_summary_writer(writer)
@@ -921,6 +1000,7 @@ def train_loop(config, state=None):
 
 
 def main(argv: Sequence[str]) -> None:
+  pathwaysutils.initialize()
   jax.config.update("jax_default_prng_impl", "unsafe_rbg")
   # TF allocates extraneous GPU memory when using TFDS data
   # this leads to CUDA OOMs. WAR for now is to hide GPUs from TF
@@ -931,13 +1011,24 @@ def main(argv: Sequence[str]) -> None:
   config = pyconfig.initialize(argv)
   max_utils.print_system_information()
   validate_train_config(config)
-  os.environ["TFDS_DATA_DIR"] = config.dataset_path
+  os.environ["TFDS_DATA_DIR"] = config.dataset_path or ""
   vertex_tensorboard_manager = VertexTensorboardManager()
   if config.use_vertex_tensorboard or os.environ.get("UPLOAD_DATA_TO_TENSORBOARD"):
     vertex_tensorboard_manager.configure_vertex_tensorboard(config)
 
   if config.monitor_goodput and jax.process_index() == 0:
     logger_name = f"goodput_{config.run_name}"
+    # Workload monitoring and Goodput monitoring both uses /workload/performance
+    # GCM metric to publish step_time and step_deviation metrics. For now, we
+    # will disable publishing step deviation metrics to GCM if workload
+    # monitoring is enabled. Will reconcile this in the future.
+    if config.report_performance_metric_for_gcp_monitoring:
+      config.enable_gcp_step_deviation_metrics = False
+
+    gcp_options = monitoring.GCPOptions(
+        enable_gcp_goodput_metrics=config.enable_gcp_goodput_metrics,
+        enable_gcp_step_deviation_metrics=config.enable_gcp_step_deviation_metrics,
+    )
     goodput_monitor = monitoring.GoodputMonitor(
         job_name=config.run_name,
         logger_name=logger_name,
@@ -948,12 +1039,13 @@ def main(argv: Sequence[str]) -> None:
         include_badput_breakdown=True,
         include_step_deviation=config.monitor_step_time_deviation,
         step_deviation_interval_seconds=config.step_deviation_interval_seconds,
+        gcp_options=gcp_options,
     )
     goodput_monitor.start_goodput_uploader()
-    max_logging.log("Started Goodput upload to Tensorboard in the background!")
+    max_logging.log("Started Goodput upload to Tensorboard & GCM in the background!")
     if config.monitor_step_time_deviation:
       goodput_monitor.start_step_deviation_uploader()
-      max_logging.log("Started step time deviation upload to Tensorboard in the background!")
+      max_logging.log("Started step time deviation upload to Tensorboard & GCM in the background!")
   debug_config = debug_configuration.DebugConfig(
       stack_trace_config=stack_trace_configuration.StackTraceConfig(
           collect_stack_trace=config.collect_stack_trace,

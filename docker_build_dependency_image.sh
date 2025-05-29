@@ -19,7 +19,7 @@
 # bash docker_build_dependency_image.sh DEVICE={{gpu|tpu}} MODE=stable_stack BASEIMAGE={{JAX_STABLE_STACK BASEIMAGE FROM ARTIFACT REGISTRY}}
 # bash docker_build_dependency_image.sh MODE=nightly
 # bash docker_build_dependency_image.sh MODE=stable JAX_VERSION=0.4.13
-# Nightly build with JAX_VERSION for GPUs. Available versions listed at https://storage.googleapis.com/jax-releases/jax_nightly_releases.html:
+# Nightly build with JAX_VERSION for GPUs. Available versions listed at https://us-python.pkg.dev/ml-oss-artifacts-published/jax-public-nightly-artifacts-registry/simple/jax:
 # bash docker_build_dependency_image.sh DEVICE=gpu MODE=nightly JAX_VERSION=0.4.36.dev20241109 # Note: this sets both jax-nightly and jaxlib-nightly 
 # MODE=custom_wheels is the same as nightly except that it reinstalls any
 # additional wheels that are present in the maxtext directory.
@@ -66,30 +66,30 @@ if [[ -z ${DEVICE} ]]; then
   echo "Default DEVICE=${DEVICE}"
 fi
 
-# Function to build with MODE=stable-stack
-build_stable_stack() {
+# Function to build with MODE=jax_ai_image
+build_ai_image() {
     if [[ -z ${BASEIMAGE+x} ]]; then
         echo "Error: BASEIMAGE is unset, please set it!"
         exit 1
     fi
     COMMIT_HASH=$(git rev-parse --short HEAD)
-    echo "Building JAX Stable Stack MaxText at commit hash ${COMMIT_HASH}..."
+    echo "Building JAX AI MaxText Imageat commit hash ${COMMIT_HASH}..."
 
     docker build --no-cache \
-        --build-arg JAX_STABLE_STACK_BASEIMAGE=${BASEIMAGE} \
+        --build-arg JAX_AI_IMAGE_BASEIMAGE=${BASEIMAGE} \
         --build-arg COMMIT_HASH=${COMMIT_HASH} \
         --build-arg DEVICE="$DEVICE" \
         --network=host \
         -t ${LOCAL_IMAGE_NAME} \
-        -f ./maxtext_jax_stable_stack.Dockerfile .
+        -f ./maxtext_jax_ai_image.Dockerfile .
 }
 
 if [[ -z ${LIBTPU_GCS_PATH+x} ]] ; then
   export LIBTPU_GCS_PATH=NONE
   echo "Default LIBTPU_GCS_PATH=${LIBTPU_GCS_PATH}"
   if [[ ${DEVICE} == "gpu" ]]; then
-    if [[ ${MODE} == "stable_stack" ]]; then
-      build_stable_stack
+    if [[ ${MODE} == "stable_stack" || ${MODE} == "jax_ai_image" ]]; then
+      build_ai_image
     else
       if [[ ${MODE} == "pinned" ]]; then
         export BASEIMAGE=ghcr.io/nvidia/jax:base-2024-12-04
@@ -99,8 +99,11 @@ if [[ -z ${LIBTPU_GCS_PATH+x} ]] ; then
       docker build --network host --build-arg MODE=${MODE} --build-arg JAX_VERSION=$JAX_VERSION --build-arg DEVICE=$DEVICE --build-arg BASEIMAGE=$BASEIMAGE -f ./maxtext_gpu_dependencies.Dockerfile -t ${LOCAL_IMAGE_NAME} .
     fi
   else
-    if [[ ${MODE} == "stable_stack" ]]; then
-      build_stable_stack
+    if [[ ${MODE} == "stable_stack" || ${MODE} == "jax_ai_image" ]]; then
+      build_ai_image
+    elif [[ ${MANTARAY} == "true" ]]; then
+      echo "Building with benchmark-db"
+      docker build --network host --build-arg MODE=${MODE} --build-arg JAX_VERSION=$JAX_VERSION --build-arg LIBTPU_GCS_PATH=$LIBTPU_GCS_PATH --build-arg DEVICE=$DEVICE -f ./maxtext_db_dependencies.Dockerfile -t ${LOCAL_IMAGE_NAME} .
     else
       docker build --network host --build-arg MODE=${MODE} --build-arg JAX_VERSION=$JAX_VERSION --build-arg LIBTPU_GCS_PATH=$LIBTPU_GCS_PATH --build-arg DEVICE=$DEVICE -f ./maxtext_dependencies.Dockerfile -t ${LOCAL_IMAGE_NAME} .
     fi

@@ -20,39 +20,28 @@ limitations under the License.
 
 
 from typing import Optional
-from layers import quantizations
-from layers import linears
-from layers import initializers
-import jax
+
 from jax.ad_checkpoint import checkpoint_name
 from jax.sharding import Mesh
-from flax import linen as nn
 import jax.numpy as jnp
-from layers import attentions
-from layers import embeddings
-from layers import normalizations
-from layers import models
-import common_types
-import max_logging
 
-Array = common_types.Array
-Config = common_types.Config
-DType = common_types.DType
-Mesh = common_types.Mesh
-ScanIn = common_types.ScanIn
+from flax import linen as nn
 
-Embed = embeddings.Embed
-Attention = attentions.Attention
-RMSNorm = normalizations.RMSNorm
-Quant = quantizations.AqtQuantization
+from MaxText.layers import attentions
+from MaxText.layers import initializers
+from MaxText.layers import linears
+from MaxText.layers import models
+from MaxText.layers import moe
+from MaxText.layers import quantizations
+from MaxText.layers.quantizations import AqtQuantization as Quant
 
 # -----------------------------------------
 # The Decoder Layer for DeepSeek v3
 # -----------------------------------------
-# Please note: DeepSeek V3 is not fully support at this moment
 
 
 def self_attention_with_norm(inputs, cfg, mesh, quant, decoder_segment_ids, decoder_positions, deterministic, model_mode):
+  """self-attention with normalization"""
   # Normalization
   lnx_rms = models.RMSNorm(
       dtype=cfg.dtype,
@@ -84,8 +73,8 @@ def self_attention_with_norm(inputs, cfg, mesh, quant, decoder_segment_ids, deco
       qk_nope_head_dim=cfg.qk_nope_head_dim,
       qk_rope_head_dim=cfg.qk_rope_head_dim,
       v_head_dim=cfg.v_head_dim,
-      max_seq_len=cfg.max_target_length,
-      original_seq_len=cfg.original_seq_len,
+      max_position_embeddings=cfg.max_position_embeddings,
+      original_max_position_embeddings=cfg.original_max_position_embeddings,
       mscale=cfg.mscale,
       rope_factor=cfg.rope_factor,
   )
@@ -119,6 +108,7 @@ def self_attention_with_norm(inputs, cfg, mesh, quant, decoder_segment_ids, deco
 
 
 def post_process(cfg, layer_output, sow):
+  """postprocessing."""
   if cfg.record_internal_nn_metrics:
     sow("intermediates", "activation_mean", jnp.mean(layer_output))
     sow("intermediates", "activation_stdev", jnp.std(layer_output))
@@ -149,7 +139,9 @@ class DeepSeekDenseLayer(nn.Module):
       decoder_positions,
       deterministic,
       model_mode,
+      previous_chunk=None,
       page_state=None,
+      slot=None,
   ):
     cfg = self.config
     inputs = nn.with_logical_constraint(inputs, ("activation_batch", "activation_norm_length", "activation_embed"))
@@ -197,7 +189,9 @@ class DeepSeekMoELayer(nn.Module):
       decoder_positions,
       deterministic,
       model_mode,
+      previous_chunk=None,
       page_state=None,
+      slot=None,
   ):
     cfg = self.config
     inputs = nn.with_logical_constraint(inputs, ("activation_batch", "activation_norm_length", "activation_embed"))
@@ -207,7 +201,11 @@ class DeepSeekMoELayer(nn.Module):
         inputs, self.config, self.mesh, self.quant, decoder_segment_ids, decoder_positions, deterministic, model_mode
     )
 
-    mlp_lnx = linears.DeepSeekMoeBlock(
+    # NOTE: the naming mismatch here is to ensure reverse compatibility with existing checkpoints.
+    # The `name` represents the weight name in JAX/checkpoints and so the class name
+    # is just for readability.
+    mlp_lnx = moe.RoutedAndSharedMoE(
+        name="DeepSeekMoeBlock_0",
         config=cfg,
         mesh=self.mesh,
         kernel_init=initializers.nd_dense_init(1.0, "fan_in", "truncated_normal"),

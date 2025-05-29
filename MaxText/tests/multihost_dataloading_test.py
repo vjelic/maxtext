@@ -16,18 +16,23 @@ limitations under the License.
 
 # pylint: disable=missing-module-docstring, missing-function-docstring
 import sys
+import unittest
+import os.path
+
+import pytest
+
 import numpy as np
+
 import jax
 from jax.sharding import Mesh
 from jax.experimental import mesh_utils
 from jax.sharding import PartitionSpec
 
 import tensorflow as tf
-import unittest
-import pytest
 
-import pyconfig
-import multihost_dataloading
+from MaxText import pyconfig
+from MaxText import multihost_dataloading
+from MaxText.globals import PKG_DIR
 
 
 class MultihostDataloadingTest(unittest.TestCase):
@@ -36,7 +41,7 @@ class MultihostDataloadingTest(unittest.TestCase):
     super().setUp()
     batch_size = 4
     config = pyconfig.initialize(
-        [sys.argv[0], "configs/base.yml"],
+        [sys.argv[0], os.path.join(PKG_DIR, "configs", "base.yml")],
         per_device_batch_size=1,
         run_name="test",
         mesh_axes=["data"],
@@ -47,12 +52,8 @@ class MultihostDataloadingTest(unittest.TestCase):
         enable_checkpointing=False,
     )
     global_data_shape = PartitionSpec(batch_size, config.max_target_length)
-    data_sharding = ("data",)
     mesh_shape_1d = (len(jax.devices()),)
     self.mesh = Mesh(mesh_utils.create_device_mesh(mesh_shape_1d), config.mesh_axes)
-    data_axes = PartitionSpec(
-        "data",
-    )
     # creating 2 batches of data
     global_data = np.arange(np.prod(global_data_shape) * 2).reshape((batch_size * 2, config.max_target_length))
 
