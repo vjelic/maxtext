@@ -97,14 +97,6 @@ def validate_train_config(config):
         config.gradient_accumulation_steps == 1
     ), "fp8 can't be used with gradient_accumulation_steps right now. Please use other quantization or set gradient_accumulation_steps to 1"
 
-  # Check if GPU Flash Attention is being used with sequence packing
-  if config.attention == "cudnn_flash_te" and config.packing and config.dataset_type != "synthetic":
-    raise ValueError(
-        "cudnn_flash_te only supports BSHD format. The THD (seq packing) support is going to be available in Transformer Engine 2.0 release. "
-        "Please disable sequence packing (set packing=False) or use a different attention mechanism. "
-        "With synthetic data, the format is not important as packing is not applied."
-    )
-
 
 def get_first_step(state):
   with jax.spmd_mode("allow_all"):
