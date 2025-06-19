@@ -855,6 +855,8 @@ def train_loop(config, state=None):
       record_goodput(recorder, config, recorder.record_step_start_time if recorder else None, step)
       with mesh, nn_partitioning.axis_rules(config.logical_axis_rules):
         state, metrics = p_train_step(state, example_batch, nextrng)
+      if config.model_name!="llama2-7b":
+        jax.block_until_ready(state)
 
     step_time_delta = datetime.datetime.now() - last_step_completion
     last_step_completion = datetime.datetime.now()
