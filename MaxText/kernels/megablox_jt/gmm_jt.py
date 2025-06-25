@@ -193,7 +193,7 @@ def gmm(
   m_config =  pick_best_gmm_config(M = m, K = k, N = n, G = g,
           group_sizes = None,  input_type = jnp.bfloat16, output_type = jnp.bfloat16, trans_rhs = transpose_rhs)
   grid = compute_gmm_grid(n, m_config.block_size_m, m_config.block_size_n, group_sizes, m_config.grid_dim)
-  print("gmm config grid: ", transpose_rhs, m, k, n, m_config, grid)
+#  print("gmm config grid: ", transpose_rhs, m, k, n, m_config, grid)
   is_k_divisible_by_block_k = (k%m_config.block_size_k)==0
   return  jt.triton_call(
         lhs,
@@ -270,7 +270,7 @@ def ptgmm(
           group_sizes = group_sizes,  input_type = jnp.bfloat16, output_type = jnp.bfloat16, 
           trans_lhs = trans_lhs,)
   grid = compute_ptgmm_grid( k, n, num_group, m_config.block_size_k, m_config.block_size_n, m_config.grid_dim,)
-  print("ptgmm config grid: ",trans_lhs, m, k, n, num_group, m_config, grid)
+#  print("ptgmm config grid: ",trans_lhs, m, k, n, num_group, m_config, grid)
   return  jt.triton_call(
         lhs,
         rhs,
@@ -346,7 +346,7 @@ def nptgmm(
           group_sizes = group_sizes,  input_type = jnp.bfloat16, output_type = jnp.bfloat16)
   grid = compute_tgmm_grid( k, n, num_group, m_config.block_size_k, m_config.block_size_n)
   block_size_g = triton.next_power_of_2(num_group)
-  print("nptgmm config grid: ", trans_lhs, m, k, n, num_group, m_config, grid,num_group)
+#  print("nptgmm config grid: ", trans_lhs, m, k, n, num_group, m_config, grid,num_group)
   return  jt.triton_call(
         lhs,
         rhs,

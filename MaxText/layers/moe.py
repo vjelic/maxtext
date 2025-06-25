@@ -542,7 +542,7 @@ class RoutedMoE(nn.Module):
       if self.config.megablox:
         m, k, n = inputs.shape[0], inputs.shape[1], kernel.shape[2]
         if self.config.hardware == 'gpu':
-          print("moe gmm_jt lhs rhs G: ", inputs.shape, kernel.shape, group_sizes.shape, lhs_quantize_dtype, rhs_quantize_dtype)
+#          print("moe gmm_jt lhs rhs G: ", inputs.shape, kernel.shape, group_sizes.shape, lhs_quantize_dtype, rhs_quantize_dtype)
           if lhs_quantize_dtype != None or rhs_quantize_dtype != None:
               raise ValueError("Megablox jax-triton does not support quantization yet!")
           output = mblx_jt.gmm(
@@ -566,7 +566,7 @@ class RoutedMoE(nn.Module):
         )
       else:
         rhs_inputs = kernel
-        print("ragged_dot lhs rhs G : ", inputs.shape,  kernel.shape, group_sizes.shape,  lhs_quantize_dtype, rhs_quantize_dtype)
+#        print("ragged_dot lhs rhs G : ", inputs.shape,  kernel.shape, group_sizes.shape,  lhs_quantize_dtype, rhs_quantize_dtype)
         if isinstance(kernel, QTensor):
           if kernel.bias or kernel.sparsity_mask or len(kernel.scale) > 1:
             raise ValueError("Unsupported usecase for ragged_dot with quantized kernel.")
