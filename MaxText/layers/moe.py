@@ -38,6 +38,7 @@ from MaxText import max_logging
 from MaxText import max_utils
 from MaxText.common_types import DType, Array, Config, DecoderBlockType
 from MaxText.kernels import megablox as mblx
+from MaxText.kernels import megablox_jt as mblx_jt
 from MaxText.layers import initializers
 from MaxText.layers import linears
 from MaxText.layers import quantizations
@@ -540,7 +541,21 @@ class RoutedMoE(nn.Module):
 
       if self.config.megablox:
         m, k, n = inputs.shape[0], inputs.shape[1], kernel.shape[2]
-        output = mblx.gmm(
+        if self.config.hardware == 'gpu':
+          print("moe gmm_jt lhs rhs G: ", inputs.shape, kernel.shape, group_sizes.shape, lhs_quantize_dtype, rhs_quantize_dtype)
+          if lhs_quantize_dtype != None or rhs_quantize_dtype != None:
+              raise ValueError("Megablox jax-triton does not support quantization yet!")
+          output = mblx_jt.gmm(
+            lhs=inputs,
+            rhs=kernel,
+            group_sizes=group_sizes,
+            preferred_element_type=jnp.bfloat16,
+            tiling=(min(tile_size[0], m), min(tile_size[1], k), min(tile_size[2], n)),
+            lhs_quantize_dtype=lhs_quantize_dtype,
+            rhs_quantize_dtype=rhs_quantize_dtype,
+          )
+        else:
+          output = mblx.gmm(
             lhs=inputs,
             rhs=kernel,
             group_sizes=group_sizes,
@@ -551,6 +566,7 @@ class RoutedMoE(nn.Module):
         )
       else:
         rhs_inputs = kernel
+        print("ragged_dot lhs rhs G : ", inputs.shape,  kernel.shape, group_sizes.shape,  lhs_quantize_dtype, rhs_quantize_dtype)
         if isinstance(kernel, QTensor):
           if kernel.bias or kernel.sparsity_mask or len(kernel.scale) > 1:
             raise ValueError("Unsupported usecase for ragged_dot with quantized kernel.")
