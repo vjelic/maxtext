@@ -100,7 +100,7 @@ srun echo "MASTER_ADDR="$MASTER_ADDR
 export docker=podman
 #docker=docker
 
-IMAGE="rocm/jax-maxtext-training-private:20250317"
+IMAGE="rocm/jax-training:maxtext-v25.5"
 
 export NNODES=$SLURM_NNODES
 export JAX_COORDINATOR_IP=$MASTER_ADDR
